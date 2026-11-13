@@ -100,13 +100,13 @@ class ScenarioGenerator:
                 in_track = False
 
             elif scenario == "LINE_CROSSING":
-                # Strolling gradually forward across the yellow band, then stepping back
+                # Strolling gradually forward across the yellow band (y: 278 -> 326), then stepping back
                 if f < 25:
-                    y = curr_y + (f / 25.0) * 40.0 # enters yellow band
+                    y = curr_y + (f / 25.0) * 65.0 # enters deep into yellow band (y -> 298)
                 elif f < 50:
-                    y = curr_y + 40.0              # lingers in yellow band
+                    y = curr_y + 65.0              # lingers in yellow band
                 else:
-                    y = curr_y + 40.0 - ((f - 50) / 25.0) * 35.0 # steps back
+                    y = curr_y + 65.0 - ((f - 50) / 25.0) * 55.0 # steps back onto platform
                 x = curr_x + f * 0.5
                 torso_tilt = 86.0
                 in_track = False
@@ -268,3 +268,4 @@ class ScenarioGenerator:
             writer.write(frame)
 
         writer.release()
+
