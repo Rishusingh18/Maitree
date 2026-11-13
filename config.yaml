@@ -1,0 +1,73 @@
+# AI Metro Platform Safety System Configuration
+
+system:
+  station_id: "DMRC_STN_042"
+  platform_id: "PL_DOWN_01"
+  camera_id: "CCTV_CAM_03"
+  fps_target: 25.0
+  frame_skip: 1          # 1 = process every frame, 2 = process every other frame
+  input_resolution: [640, 480]  # [width, height]
+
+perception:
+  model_name: "yolov8n-pose.pt"
+  confidence_threshold: 0.35
+  iou_threshold: 0.45
+  device: "cpu"          # "cpu" or "cuda"
+
+tracking:
+  tracker_type: "bytetrack"
+  track_high_thresh: 0.5
+  track_low_thresh: 0.2
+  new_track_thresh: 0.6
+  track_buffer: 30
+  match_thresh: 0.8
+
+zones:
+  # Coordinates in normalized or pixel space [x, y]
+  # Configured for standard 640x480 resolution view
+  platform:
+    - [0, 160]
+    - [640, 160]
+    - [640, 270]
+    - [0, 270]
+  yellow_band:
+    - [0, 270]
+    - [640, 270]
+    - [640, 310]
+    - [0, 310]
+  track_bed:
+    - [0, 310]
+    - [640, 310]
+    - [640, 480]
+    - [0, 480]
+  danger_zone:
+    - [0, 290]
+    - [640, 290]
+    - [640, 480]
+    - [0, 480]
+
+train_state:
+  provider: "simulated"  # "simulated", "schedule", or "vision"
+  default_state: "ABSENT"
+  schedule_file: "data/train_schedule.json"
+
+events:
+  line_crossing_consecutive_frames: 4
+  track_intrusion_consecutive_frames: 3
+  fall_drop_velocity_threshold: 18.0   # pixels/frame drop
+  fall_angle_threshold: 40.0           # degrees from horizontal
+  jump_approach_frames: 4
+  temporal_window_size: 15             # keypoint frames window for classifier
+
+gesture:
+  detection_window_frames: 18
+  min_persistence_frames: 4
+  max_cooldown_frames: 30
+  use_macro_fallback: true             # Wrists crossed overhead
+
+escalation:
+  auto_escalate_timer_sec: 60
+  ets_human_confirmation_required: true
+  ets_confirmation_timeout_sec: 5.0
+  webhook_url: "http://127.0.0.1:5000/api/alert"
+  alert_log_file: "logs/safety_audit.log"

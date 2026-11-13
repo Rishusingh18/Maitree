@@ -1,0 +1,13 @@
+.venv/
+mingit/
+__pycache__/
+*.pyc
+*.pyo
+*.pbtxt
+*.log
+.pytest_cache/
+runs/
+*.mp4
+*.avi
+data/cache/
+yolov8*.pt
