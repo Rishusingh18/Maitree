@@ -31,6 +31,16 @@ class SafetyEvent:
     evidence_frames: List[int] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self):
+        # Never report exactly 100% (1.0) confidence; strictly cap at 0.99 and calibrate
+        try:
+            val = float(self.confidence)
+            if val > 1.0:
+                val = val / 100.0
+            self.confidence = min(0.99, max(0.01, val))
+        except (ValueError, TypeError):
+            self.confidence = 0.50
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "event_type": self.event_type.value,

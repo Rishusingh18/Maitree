@@ -2,7 +2,7 @@ system:
   station_id: DMRC_STN_042
   platform_id: PL_DOWN_01
   camera_id: CCTV_CAM_03
-  source: http://192.168.1.8:8080/video
+  source: http://192.168.1.32:8080/video
   fps_target: 25.0
   frame_skip: 1
   input_resolution:
@@ -108,10 +108,16 @@ events:
   line_crossing_consecutive_frames: 4
   # Consecutive frames inside track bed to trigger TRACK_INTRUSION
   track_intrusion_consecutive_frames: 3
+  # Minimum observation duration frames before confirming fall or jump motion
+  min_motion_duration_frames: 4
+  # Minimum cumulative vertical drop displacement (pixels) required for ACCIDENTAL_FALL
+  fall_min_displacement_px: 10.0
   # Vertical drop velocity (pixels/frame) to classify an ACCIDENTAL_FALL
   fall_drop_velocity_threshold: 18.0
   # Torso angle deviation from vertical (degrees) indicating horizontal body collapse
   fall_angle_threshold: 40.0
+  # Minimum cumulative displacement (pixels) required for DELIBERATE_JUMP
+  jump_min_displacement_px: 8.0
   # Number of platform edge approach frames evaluated before jump leap
   jump_approach_frames: 4
   # Leaping downward vertical velocity threshold (pixels/frame) for DELIBERATE_JUMP

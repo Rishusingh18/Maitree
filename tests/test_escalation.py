@@ -54,3 +54,39 @@ def test_ets_human_confirmation_interlock():
     assert res is True
     assert ets.is_tripped() is True
 
+
+def test_escalation_explicit_train_state_and_snapshot():
+    """Verify train_state passed explicitly overrides event.train_state, and snapshot is accepted."""
+    import numpy as np
+    from metro_safety.perception.train_state import TrainState
+
+    eng = EscalationEngine()
+    ev = SafetyEvent(EventType.TRACK_INTRUSION, 0.92, 10, 1.0, "track_bed", "ABSENT")
+    dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    # When train_state="APPROACHING" is passed explicitly, should escalate to L3
+    dec = eng.evaluate(ev, train_state=TrainState.APPROACHING, snapshot=dummy_frame)
+    assert dec.severity == SeverityLevel.L3
+    assert dec.snapshot is not None
+    assert dec.snapshot.shape == (480, 640, 3)
+
+    # String train_state also supported
+    dec2 = eng.evaluate(ev, train_state="ABSENT", snapshot=dummy_frame)
+    assert dec2.severity == SeverityLevel.L2
+
+
+def test_escalation_invalid_argument_type_checks():
+    """Runtime check: Passing an ndarray as train_state or current_time must raise a clear TypeError."""
+    import numpy as np
+
+    eng = EscalationEngine()
+    ev = SafetyEvent(EventType.LINE_CROSSING, 0.90, 11, 1.0, "yellow_band", "ABSENT")
+    dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    with pytest.raises(TypeError, match="Invalid type for 'train_state'"):
+        eng.evaluate(ev, dummy_frame)  # Positional frame passed as train_state!
+
+    with pytest.raises(TypeError, match="Invalid type for 'current_time'"):
+        eng.evaluate(ev, "ABSENT", dummy_frame)  # Positional frame passed as current_time!
+
+

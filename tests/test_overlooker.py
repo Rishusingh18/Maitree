@@ -121,3 +121,4 @@ def test_overlooker_silent_distress_and_audit(tmp_path):
         data = json.loads(lines[0])
         assert data["event_type"] == "DISTRESS_GESTURE"
         assert data["track_id"] == 4
+

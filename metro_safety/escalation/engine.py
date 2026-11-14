@@ -8,10 +8,12 @@ With auto-escalation timer and audit trail.
 """
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Union
 import time
+import numpy as np
 
 from metro_safety.events.models import SafetyEvent, EventType, SeverityLevel
+from metro_safety.perception.train_state import TrainState
 from metro_safety.escalation.adapters import (
     BasePlatformBuzzer,
     BaseControlRoomNotifier,
@@ -31,6 +33,7 @@ class EscalationDecision:
     latency_ms: float
     timestamp: float
     event: SafetyEvent
+    snapshot: Optional[np.ndarray] = None
 
 class EscalationEngine:
     """Evaluates safety events against severity rules and hardware actuators."""
@@ -54,13 +57,60 @@ class EscalationEngine:
         self.active_intrusions: Dict[int, float] = {}  # track_id -> first detection timestamp
         self.decision_log: List[EscalationDecision] = []
 
-    def evaluate(self, event: SafetyEvent, current_time: Optional[float] = None) -> EscalationDecision:
+    def evaluate(
+        self,
+        event: SafetyEvent,
+        train_state: Optional[Union[str, TrainState]] = None,
+        current_time: Optional[float] = None,
+        snapshot: Optional[np.ndarray] = None
+    ) -> EscalationDecision:
         """Process event, determine severity ladder action, trigger adapters, and measure latency."""
-        t_now = current_time if current_time is not None else time.time()
+        # 1. Strict runtime type checks to catch argument misplacements early
+        if not isinstance(event, SafetyEvent):
+            raise TypeError(f"Expected SafetyEvent for 'event', got {type(event).__name__}")
+
+        if isinstance(train_state, np.ndarray):
+            raise TypeError(
+                f"Invalid type for 'train_state': received numpy.ndarray. "
+                f"Did you pass a video frame as positional argument? "
+                f"Pass the frame as snapshot=<frame> and train_state=<str/TrainState> explicitly."
+            )
+
+        if isinstance(current_time, np.ndarray):
+            raise TypeError(
+                f"Invalid type for 'current_time': received numpy.ndarray. "
+                f"Did you pass a video frame as positional argument? "
+                f"Pass the frame as snapshot=<frame> explicitly."
+            )
+
+        if current_time is not None and not isinstance(current_time, (int, float)):
+            raise TypeError(f"Invalid type for 'current_time': expected float or None, got {type(current_time).__name__}")
+
+        if snapshot is not None and not isinstance(snapshot, np.ndarray):
+            raise TypeError(f"Invalid type for 'snapshot': expected numpy.ndarray or None, got {type(snapshot).__name__}")
+
+        # 2. Resolve train_state
+        effective_train_state: str = "ABSENT"
+        if train_state is not None:
+            if isinstance(train_state, str):
+                effective_train_state = train_state.upper()
+            elif hasattr(train_state, "value"):
+                effective_train_state = str(train_state.value).upper()
+            else:
+                raise TypeError(
+                    f"Invalid type for 'train_state': expected str, TrainState, or None, got {type(train_state).__name__}"
+                )
+        elif event.train_state is not None:
+            if hasattr(event.train_state, "value"):
+                effective_train_state = str(event.train_state.value).upper()
+            else:
+                effective_train_state = str(event.train_state).upper()
+
+        t_now = float(current_time) if current_time is not None else time.time()
         start_time = time.perf_counter()
 
         ev_type = event.event_type
-        train_state = event.train_state
+        train_state_str = effective_train_state
 
         severity = SeverityLevel.NORMAL
         action_msg = ""
@@ -96,7 +146,7 @@ class EscalationEngine:
             elapsed = t_now - self.active_intrusions[event.track_id]
 
             # High severity if train approaching OR duration exceeds auto-escalate timer
-            if train_state == "APPROACHING" or elapsed >= self.auto_escalate_sec:
+            if train_state_str == "APPROACHING" or elapsed >= self.auto_escalate_sec:
                 severity = SeverityLevel.L3
                 action_msg = f"CRITICAL: Track intrusion with train approaching ({elapsed:.1f}s)! Triggering ETS."
                 buzzer_active = True
@@ -107,7 +157,7 @@ class EscalationEngine:
             else:
                 # Level 2: Person on track, train absent or far
                 severity = SeverityLevel.L2
-                action_msg = f"WARNING: Person on track bed (train {train_state}). Sounding buzzer & alerting control room."
+                action_msg = f"WARNING: Person on track bed (train {train_state_str}). Sounding buzzer & alerting control room."
                 buzzer_active = True
                 cr_alert = True
                 self.buzzer.activate(self.platform_id, pattern="PULSED")
@@ -115,7 +165,7 @@ class EscalationEngine:
 
         # 4. Yellow Line Crossing
         elif ev_type == EventType.LINE_CROSSING:
-            if train_state == "APPROACHING":
+            if train_state_str == "APPROACHING":
                 severity = SeverityLevel.L2
                 action_msg = "Yellow line crossed while train is approaching! Warning buzzer + control room notification."
                 buzzer_active = True
@@ -138,8 +188,11 @@ class EscalationEngine:
             ets_triggered=ets_active,
             latency_ms=round(latency_ms, 2),
             timestamp=t_now,
-            event=event
+            event=event,
+            snapshot=snapshot
         )
+        self.decision_log.append(decision)
+        return decision
         self.decision_log.append(decision)
         return decision
 

@@ -94,35 +94,51 @@ class LiveHub:
         canvas[:] = (24, 26, 32)  # Dark slate background
 
         # Red banner
-        cv2.rectangle(canvas, (40, 160), (w - 40, 320), (35, 38, 48), -1)
-        cv2.rectangle(canvas, (40, 160), (w - 40, 320), (0, 70, 220), 2)
+        cv2.rectangle(canvas, (40, 140), (w - 40, 340), (35, 38, 48), -1)
+        cv2.rectangle(canvas, (40, 140), (w - 40, 340), (0, 70, 220), 2)
 
         # Warning icon/text
-        cv2.putText(canvas, "[!] CCTV STREAM OFFLINE", (70, 210),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 80, 255), 2)
-        cv2.putText(canvas, "Auto-reconnect with backoff active...", (70, 245),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-        cv2.putText(canvas, f"Target: {self._status_msg}", (70, 275),
+        cv2.putText(canvas, "[!] CCTV STREAM STANDBY / RECONNECTING", (60, 195),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 80, 255), 2)
+        cv2.putText(canvas, "Waiting for video frames from camera pipeline...", (60, 235),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (220, 220, 220), 1)
+        status_disp = self._status_msg if self._status_msg else "Camera feed initializing..."
+        if len(status_disp) > 45:
+            status_disp = status_disp[:42] + "..."
+        cv2.putText(canvas, f"Source: {status_disp}", (60, 275),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (160, 160, 160), 1)
+        cv2.putText(canvas, "Low-latency buffer size 1 | Auto-reconnect active", (60, 305),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (120, 120, 120), 1)
 
         # Top/bottom metadata
         ts_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
         cv2.putText(canvas, f"{self.station_id} | {self.cctv_id} | {ts_str}", (20, 35),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (120, 120, 120), 1)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (140, 140, 140), 1)
 
-        ret, jpeg = cv2.imencode('.jpg', canvas, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+        ret, jpeg = cv2.imencode('.jpg', canvas, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
         return jpeg.tobytes() if ret else b""
 
     def mjpeg_generator(self):
         """Generator yielding MJPEG multipart chunks for Flask streaming."""
         while True:
-            self._frame_event.wait(timeout=0.08)
+            # Wait for next frame event or timeout to emit latest frame
+            self._frame_event.wait(timeout=0.06)
             self._frame_event.clear()
             jpeg_bytes = self.get_latest_jpeg()
-            yield (
-                b'--frame\r\n'
-                b'Content-Type: image/jpeg\r\n\r\n' + jpeg_bytes + b'\r\n'
-            )
+            if not jpeg_bytes:
+                time.sleep(0.04)
+                continue
+            try:
+                yield (
+                    b'--frame\r\n'
+                    b'Content-Type: image/jpeg\r\n'
+                    b'Content-Length: ' + str(len(jpeg_bytes)).encode('ascii') + b'\r\n\r\n'
+                    + jpeg_bytes + b'\r\n'
+                )
+            except GeneratorExit:
+                break
+            except Exception:
+                break
 
     # ================= Telemetry =================
     def update_telemetry(self, fps: float, latency_ms: float, train_state: str = None, ets_status: str = None):
@@ -235,3 +251,4 @@ class LiveHub:
             self.ets_status = "DISENGAGED"
             logger.info("[SAFETY TRIP] Emergency Trip Switch reset to DISENGAGED.")
             return {"status": "ok", "ets_status": "DISENGAGED"}
+

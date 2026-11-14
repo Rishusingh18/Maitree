@@ -1,0 +1,53 @@
+{
+  "events": [
+    {
+      "frame": 20,
+      "timestamp": 0.8,
+      "time_str": "16:46:08",
+      "track_id": 1,
+      "event_type": "DELIBERATE_JUMP",
+      "severity": "L3",
+      "zone": "platform",
+      "confidence": 1.0,
+      "action": "CRITICAL: DELIBERATE_JUMP on track! Actuating platform buzzer, alarm, and emergency stop recommendation.",
+      "kinematics": {
+        "zone": "platform",
+        "vy": 1.9,
+        "angle": 0.0
+      }
+    },
+    {
+      "frame": 22,
+      "timestamp": 0.88,
+      "time_str": "16:46:09",
+      "track_id": 1,
+      "event_type": "DELIBERATE_JUMP",
+      "severity": "L3",
+      "zone": "platform",
+      "confidence": 1.0,
+      "action": "CRITICAL: DELIBERATE_JUMP on track! Actuating platform buzzer, alarm, and emergency stop recommendation.",
+      "kinematics": {
+        "zone": "platform",
+        "vy": 5.5,
+        "angle": 0.0
+      }
+    },
+    {
+      "frame": 23,
+      "timestamp": 0.92,
+      "time_str": "16:46:09",
+      "track_id": 1,
+      "event_type": "DELIBERATE_JUMP",
+      "severity": "L3",
+      "zone": "platform",
+      "confidence": 1.0,
+      "action": "CRITICAL: DELIBERATE_JUMP on track! Actuating platform buzzer, alarm, and emergency stop recommendation.",
+      "kinematics": {
+        "zone": "platform",
+        "vy": 5.7,
+        "angle": 0.0
+      }
+    }
+  ],
+  "total_events": 3
+}

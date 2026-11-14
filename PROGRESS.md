@@ -15,6 +15,10 @@
 | **Phase 10** | Unit & Integration Test Suite | **DONE** | 17/17 unit and integration tests passing (`pytest tests -v`) |
 | **Phase 11** | Self-Review, Documentation & SUMMARY.md | **DONE** | Complete `README.md`, `ASSUMPTIONS.md`, `SUMMARY.md` |
 | **Phase 12** | Live Camera Input & Interactive Calibration | **DONE** | Threaded `FrameSource` (HTTP/RTSP/webcam/file), buffer size 1 drop stale, auto-reconnect backoff, live telemetry HUD (FPS/latency), fallback video, `calibrate.py` |
+| **Phase 13** | Live Phone Camera & Dashboard Integration | **DONE** | One-command `python -m metro_safety.demo.live`, LiveHub MJPEG `/video_feed`, live FPS/latency telemetry, audible PC buzzer (winsound/fallback) with L1-L3 patterns + clear timeout + acknowledge + mute, overlooker alert banner + Windows toast + optional push + cooldown + audit log, `record_clip` & `replay` tools with kinematic HUD, 31/31 tests passing |
+| **Phase 14** | Robustness, Crash Hardening & Video Feed Fixes | **DONE** | Fixed escalation signature mismatch (`train_state` explicit, `snapshot` separate, runtime type checks), wrapped per-frame and per-event pipelines in isolated try/except blocks, fixed `/video_feed` multipart MJPEG streaming with headers + auto-reconnect fallback, added false-alert gating (min duration $\ge 4$ frames, min displacement gates), capped all confidences at 0.99, added 5 new regression and robustness tests (36/36 passed) |
 
 ---
-**Overall Status**: All core project sections and live camera streaming extensions fully implemented, verified, tested (17/17 passed), and documented. Model benchmark accuracy: 94.4% (Rule-Based), 100.0% (Learned GBDT).
+**Overall Status**: All core project sections, live camera streaming extensions, hardware buzzer escalation, overlooker alerting, full dashboard integration, and robustness bugfixes are completely implemented, verified, tested (36/36 passed), and documented. Model benchmark accuracy: 100.0% (Learned GBDT), 94.4% (Rule-Based).
+
+

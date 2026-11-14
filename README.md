@@ -83,32 +83,71 @@ You can use any Android phone or iPhone connected to your local Wi-Fi network as
    ```
 3. Alternatively, any RTSP streaming camera app providing `rtsp://<phone-ip>:<port>/live` can be used directly.
 
-### Running with Live Phone Stream
-The live stream URL is set by default in `config.yaml` under `system.source`:
+### Running One-Command Live Mode (Vision Pipeline + Control Room Web Dashboard)
+The live phone camera stream URL is configured in `config.yaml` under `system.source`:
 ```yaml
 system:
   source: "http://192.168.1.32:8080/video"
 ```
 
-To run the live pipeline on your phone stream:
+To launch the complete live system with a single command:
 ```bash
-# Uses the default source in config.yaml (http://192.168.1.32:8080/video)
-python -m metro_safety.demo.run
+# Starts live vision pipeline + Flask dashboard on http://localhost:5000 + PC buzzer
+python -m metro_safety.demo.live
 
-# Or explicitly pass the --source flag:
-python -m metro_safety.demo.run --source http://192.168.1.32:8080/video
+# Or override the stream source or dashboard port:
+python -m metro_safety.demo.live --source http://192.168.1.32:8080/video --port 5000
 
-# To process an attached USB webcam:
-python -m metro_safety.demo.run --source 0
+# Headless mode (no OpenCV GUI window, view exclusively via web dashboard):
+python -m metro_safety.demo.live --no-window
+```
 
-# To process a pre-recorded clip:
-python -m metro_safety.demo.run --source demo_clips/demo_fall.mp4
+### 🔊 Real Laptop Hardware Buzzer & Severity Patterns
+When incidents are detected, an audible alarm triggers on your laptop (using `winsound` on Windows with cross-platform terminal bell fallback) executed in a dedicated background daemon thread:
+- **L1 (Line Crossing)**: Short 150ms warning pulse (800 Hz).
+- **L2 (Track Intrusion)**: Repeating double beep (1200 Hz).
+- **L3 (Fall / Jump / Approaching Train)**: Continuous urgent wailing siren (1800 Hz / 2200 Hz).
+- **DISTRESS (Signal for Help)**: **100% Silent** (no buzzer sounded on platform to protect victim).
+- **Auto-Stop on Zone Clear**: The buzzer automatically shuts off after all persons remain clear of danger zones for 4.0 continuous seconds (`buzzer.clear_timeout_sec`).
+- **Operator Acknowledge**: Clicking **"ACKNOWLEDGE & SILENCE BUZZER"** on the web dashboard immediately silences the alarm.
+- **Controls**: The dashboard provides a "Mute Buzzer" toggle and "Test Beep (L2/L3)" buttons. Disable audio entirely via `config.yaml` (`buzzer.audio_enabled: false`).
+
+### 🚨 Overlooker Alert Engine & Notifications
+On L2/L3 critical incidents and silent distress gestures, the system triggers the Overlooker engine:
+1. **Dashboard Emergency Banner**: High-visibility flashing banner with incident details and quick-action acknowledgment.
+2. **Windows Desktop Toast Notification**: Native Windows toast notification dispatched directly to the operator's desktop.
+3. **Optional Outbound Push**: Optional offline-first push integration via `ntfy.sh` topic and/or Telegram Bot API (configured in `config.yaml`, disabled by default for 100% offline security).
+4. **Rate-Limiting & Audit Log**: 10-second per-event-type cooldown prevents alert storms. Every notification is logged with timestamps to `logs/overlooker_audit.log`.
+
+### 🎥 Diagnostic Tools: Record Raw Clips & Offline Replay Tuning
+To tune deliberate-jump and fall kinematic thresholds against your specific camera angle without physically jumping repeatedly:
+```bash
+# 1. Record a 20-second pristine raw clip from your live phone camera
+python -m metro_safety.tools.record_clip --seconds 20 --out data/recordings/jump_test.mp4
+
+# 2. Replay the recorded clip with full pipeline & on-screen kinematic HUD
+python -m metro_safety.tools.replay --video data/recordings/jump_test.mp4
+
+# Spacebar pauses/resumes playback; press 'q' to exit.
+# Kinematic HUD displays: Track ID | Zone | Vertical Velocity (vy px/frame) | Torso Angle (deg)
+# Outputs structured event audit log to data/recordings/replay_audit.json
+```
+
+Key threshold parameters can be adjusted directly in `config.yaml`:
+```yaml
+events:
+  fall_drop_velocity_threshold: 18.0     # Downward drop speed (px/frame)
+  fall_angle_threshold: 40.0             # Torso tilt deviation from vertical (deg)
+  jump_vertical_velocity_threshold: 12.0 # Leaping downward velocity (px/frame)
+  jump_forward_velocity_threshold: 8.0   # Forward approach velocity (px/frame)
+  jump_approach_frames: 4                # Number of platform edge approach frames
 ```
 
 ### Live Features & Resilience:
-- **Zero-Lag Real-Time Threaded Reader**: Always retains only the latest frame (buffer size 1, stale frames dropped) so video processing latency never drifts behind reality.
-- **On-Screen Live Telemetry HUD**: Displays real-time **FPS** and **End-to-End Latency (ms)** alongside track IDs, pose skeletons, zone polygons, and severity banners.
-- **Auto-Reconnect with Exponential Backoff**: If Wi-Fi drops or the camera app sleeps, the background worker automatically retries connecting (1s up to 16s) without crashing the pipeline.
+- **Zero-Lag Real-Time Threaded Reader**: Retains only the latest frame (buffer size 1, stale frames dropped) so video processing latency never drifts behind reality.
+- **Live MJPEG Video Feed**: Published directly to `/video_feed` on the dashboard; displays a clear "STREAM OFFLINE - RECONNECTING" standby frame if the camera drops.
+- **Live-Measured Telemetry**: Live FPS, latency (ms), and synthetic benchmark accuracy are continuously measured and streamed to the dashboard.
+- **Auto-Reconnect with Exponential Backoff**: Automatically recovers from Wi-Fi dropouts or camera app pauses.
 - **Automatic Fallback Protection**: If the network stream is unreachable, the system automatically falls back to pre-recorded footage (`demo_clips/demo_fall.mp4`) with a clear on-screen notice, ensuring 100% operational continuity.
 
 ---

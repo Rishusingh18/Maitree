@@ -3,12 +3,15 @@ Detects Line Crossing, Track Intrusion, Accidental Fall, and Deliberate Jump.
 """
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional, Any
+import logging
 import numpy as np
 
 from metro_safety.perception.base import Detection
 from metro_safety.zones.geometry import ZoneManager
 from metro_safety.perception.train_state import TrainState
 from metro_safety.events.models import SafetyEvent, EventType
+
+logger = logging.getLogger("metro_safety.events.rule_classifier")
 
 @dataclass
 class TrackObservation:
@@ -31,7 +34,10 @@ class TrackStateMachine:
         fall_drop_vel_thresh: float = 14.0,
         fall_angle_thresh: float = 40.0,
         jump_approach_frames: int = 4,
-        jump_vel_thresh: float = 12.0
+        jump_vel_thresh: float = 12.0,
+        min_event_frames: int = 4,
+        min_drop_displacement: float = 10.0,
+        min_jump_displacement: float = 8.0
     ):
         self.track_id = track_id
         self.line_cross_thresh = line_crossing_thresh
@@ -40,6 +46,9 @@ class TrackStateMachine:
         self.fall_angle_thresh = fall_angle_thresh
         self.jump_approach_frames = jump_approach_frames
         self.jump_vel_thresh = jump_vel_thresh
+        self.min_event_frames = min_event_frames
+        self.min_drop_displacement = min_drop_displacement
+        self.min_jump_displacement = min_jump_displacement
 
         self.observations: List[TrackObservation] = []
         self.current_event: EventType = EventType.NORMAL
@@ -110,7 +119,7 @@ class TrackStateMachine:
         return None
 
     def _classify_kinematics(self, train_state: TrainState) -> Optional[SafetyEvent]:
-        if len(self.observations) < 3:
+        if len(self.observations) < 2:
             return None
 
         latest = self.observations[-1]
@@ -118,8 +127,8 @@ class TrackStateMachine:
         oldest = self.observations[0]
 
         # 1. Check if person is on track / entering track
-        if self.track_consecutive >= self.track_intrus_thresh or latest.zone == "track_bed":
-            # If already classified as fall or jump, preserve it
+        if self.track_consecutive >= self.track_intrus_thresh or latest.zone in ["track_bed", "danger_zone"]:
+            # If already classified as fall or jump, preserve it (capped at 0.95/0.92)
             if self.confirmed_fall:
                 return self._make_event(EventType.ACCIDENTAL_FALL, 0.95, latest, train_state)
             if self.confirmed_jump:
@@ -131,35 +140,62 @@ class TrackStateMachine:
                 dy = self.observations[-i].torso_point[1] - self.observations[-i-1].torso_point[1]
                 drop_deltas.append(dy)
             max_drop_vel = max(drop_deltas) if drop_deltas else 0.0
+            positive_drops = sum(1 for dy in drop_deltas if dy > 0.5)
+
+            # Compute cumulative vertical drop displacement across recent window
+            w_disp_len = min(len(self.observations), 6)
+            cum_vert_disp = latest.torso_point[1] - self.observations[-w_disp_len].torso_point[1]
 
             # Compute horizontal edge approach velocity prior to entering track
-            # Look at trajectory prior to track entry
             prior_obs = [o for o in self.observations[:-2]]
             approach_vy = 0.0
             if len(prior_obs) >= 3:
                 approach_vy = (prior_obs[-1].foot_point[1] - prior_obs[0].foot_point[1]) / float(len(prior_obs))
 
-            # Distinguish ACCIDENTAL_FALL vs DELIBERATE_JUMP
-            # Fall: sudden high downward velocity, loss of upright posture (torso angle < 40 deg), no deliberate approach
-            if (max_drop_vel >= self.fall_vel_thresh or latest.torso_angle <= self.fall_angle_thresh) and approach_vy < 6.0:
+            # False-alert gates: A jump or fall requires sustained motion & minimum displacement
+            is_sustained_duration = len(self.observations) >= self.min_event_frames
+
+            # Fall: sudden high downward velocity, loss of upright posture (torso angle < 40 deg),
+            # sustained motion and minimum displacement without deliberate sprint approach
+            if (
+                is_sustained_duration
+                and cum_vert_disp >= self.min_drop_displacement
+                and (max_drop_vel >= self.fall_vel_thresh or latest.torso_angle <= self.fall_angle_thresh)
+                and approach_vy < 6.0
+                and positive_drops >= 2
+            ):
                 self.confirmed_fall = True
+                calibrated_conf = min(0.98, max(0.85, 0.88 + 0.08 * min(1.0, cum_vert_disp / 40.0)))
                 return self._make_event(
                     EventType.ACCIDENTAL_FALL,
-                    confidence=0.94,
+                    confidence=calibrated_conf,
                     obs=latest,
                     train_state=train_state,
-                    meta={"drop_vel": round(max_drop_vel, 2), "torso_angle": round(latest.torso_angle, 1)}
+                    meta={
+                        "drop_vel": round(max_drop_vel, 2),
+                        "torso_angle": round(latest.torso_angle, 1),
+                        "cum_disp": round(cum_vert_disp, 1)
+                    }
                 )
 
             # Jump: deliberate forward/downward velocity into track while keeping controlled leap/posture
-            elif approach_vy >= 4.0 or (max_drop_vel >= 10.0 and latest.torso_angle > self.fall_angle_thresh):
+            elif (
+                is_sustained_duration
+                and (cum_vert_disp >= self.min_jump_displacement or approach_vy >= 4.0)
+                and (approach_vy >= 4.0 or (max_drop_vel >= 10.0 and latest.torso_angle > self.fall_angle_thresh))
+            ):
                 self.confirmed_jump = True
+                calibrated_conf = min(0.97, max(0.84, 0.86 + 0.08 * min(1.0, max_drop_vel / 20.0)))
                 return self._make_event(
                     EventType.DELIBERATE_JUMP,
-                    confidence=0.91,
+                    confidence=calibrated_conf,
                     obs=latest,
                     train_state=train_state,
-                    meta={"approach_vel": round(approach_vy, 2), "leap_vel": round(max_drop_vel, 2)}
+                    meta={
+                        "approach_vel": round(approach_vy, 2),
+                        "leap_vel": round(max_drop_vel, 2),
+                        "cum_disp": round(cum_vert_disp, 1)
+                    }
                 )
 
             # Default upright track presence: TRACK_INTRUSION
@@ -193,13 +229,21 @@ class TrackStateMachine:
         meta: Optional[Dict] = None
     ) -> SafetyEvent:
         frames = [o.frame_idx for o in self.observations[-5:]]
+        # Never report exactly 100% (1.0); cap at 0.99
+        calibrated_conf = min(0.99, max(0.50, float(confidence)))
+        kine = self.latest_kinematics
+        logger.debug(
+            f"[SafetyEvent] Track #{self.track_id:02d} | Event: {event_type.value} | "
+            f"Zone: {obs.zone} | vy: {kine['vy']:+05.1f} px/f | angle: {kine['angle']:04.1f} deg | "
+            f"Conf: {calibrated_conf:.2f}"
+        )
         return SafetyEvent(
             event_type=event_type,
-            confidence=confidence,
+            confidence=calibrated_conf,
             track_id=self.track_id,
             timestamp=obs.timestamp,
             zone=obs.zone,
-            train_state=train_state.value,
+            train_state=train_state.value if hasattr(train_state, "value") else str(train_state),
             evidence_frames=frames,
             metadata=meta or {}
         )
@@ -214,13 +258,19 @@ class RuleBasedEventClassifier:
         track_intrusion_thresh: int = 3,
         fall_drop_vel_thresh: float = 14.0,
         fall_angle_thresh: float = 40.0,
-        jump_vel_thresh: float = 12.0
+        jump_vel_thresh: float = 12.0,
+        min_event_frames: int = 4,
+        min_drop_displacement: float = 10.0,
+        min_jump_displacement: float = 8.0
     ):
         self.line_thresh = line_crossing_thresh
         self.track_thresh = track_intrusion_thresh
         self.fall_vel_thresh = fall_drop_vel_thresh
         self.fall_angle_thresh = fall_angle_thresh
         self.jump_vel_thresh = jump_vel_thresh
+        self.min_event_frames = min_event_frames
+        self.min_drop_displacement = min_drop_displacement
+        self.min_jump_displacement = min_jump_displacement
         self.track_machines: Dict[int, TrackStateMachine] = {}
 
     def get_track_kinematics(self, track_id: int) -> Dict[str, Any]:
@@ -254,7 +304,10 @@ class RuleBasedEventClassifier:
                     track_intrusion_thresh=self.track_thresh,
                     fall_drop_vel_thresh=self.fall_vel_thresh,
                     fall_angle_thresh=self.fall_angle_thresh,
-                    jump_vel_thresh=self.jump_vel_thresh
+                    jump_vel_thresh=self.jump_vel_thresh,
+                    min_event_frames=self.min_event_frames,
+                    min_drop_displacement=self.min_drop_displacement,
+                    min_jump_displacement=self.min_jump_displacement
                 )
 
             ev = self.track_machines[tid].update(

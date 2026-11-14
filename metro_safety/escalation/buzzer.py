@@ -207,3 +207,4 @@ class HardwareBuzzer:
                 # L3: Continuous urgent wailing siren
                 self._beep_fn(self.l3_low_freq, 150)
                 self._beep_fn(self.l3_high_freq, 150)
+

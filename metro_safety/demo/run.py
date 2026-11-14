@@ -58,7 +58,13 @@ def run_pipeline(
     )
     rule_clf = RuleBasedEventClassifier(
         line_crossing_thresh=cfg["events"]["line_crossing_consecutive_frames"],
-        track_intrusion_thresh=cfg["events"]["track_intrusion_consecutive_frames"]
+        track_intrusion_thresh=cfg["events"]["track_intrusion_consecutive_frames"],
+        fall_drop_vel_thresh=cfg["events"].get("fall_drop_velocity_threshold", 14.0),
+        fall_angle_thresh=cfg["events"].get("fall_angle_threshold", 40.0),
+        jump_vel_thresh=cfg["events"].get("jump_vertical_velocity_threshold", 12.0),
+        min_event_frames=cfg["events"].get("min_motion_duration_frames", 4),
+        min_drop_displacement=cfg["events"].get("fall_min_displacement_px", 10.0),
+        min_jump_displacement=cfg["events"].get("jump_min_displacement_px", 8.0)
     )
     learned_clf = LearnedEventClassifier()
     gesture_det = DistressGestureDetector(
@@ -171,7 +177,7 @@ def run_pipeline(
             # 4. Closed-Loop Escalation
             current_decision = None
             for ev in all_evs:
-                dec = escalation.evaluate(ev, current_time=frame_ts)
+                dec = escalation.evaluate(event=ev, train_state=train_state, current_time=frame_ts, snapshot=frame)
                 current_decision = dec
                 events_logged.append({
                     "frame": frame_idx,

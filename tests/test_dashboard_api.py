@@ -100,3 +100,40 @@ def test_dashboard_train_state_and_ets(client_and_hub):
     resp_reset = client.post("/api/ets/reset")
     assert resp_reset.status_code == 200
     assert hub.ets_status == "DISENGAGED"
+
+
+def test_dashboard_video_feed_returns_multipart_jpeg(client_and_hub):
+    """Verify /video_feed returns multipart MJPEG stream with valid JPEG data."""
+    import numpy as np
+
+    client, hub, _ = client_and_hub
+
+    # 1. Test offline fallback frame when pipeline has not yet pushed frames
+    resp = client.get("/video_feed")
+    assert resp.status_code == 200
+    assert "multipart/x-mixed-replace; boundary=frame" in resp.content_type
+
+    # Read first chunk
+    chunk = next(resp.response)
+    assert b"--frame" in chunk
+    assert b"Content-Type: image/jpeg" in chunk
+    assert b"\xff\xd8" in chunk  # JPEG SOI marker
+
+    # 2. Test live frame stream when frames are pushed
+    test_frame = np.full((240, 320, 3), 120, dtype=np.uint8)
+    hub.update_frame(test_frame, is_online=True)
+
+    resp_live = client.get("/video_feed")
+    assert resp_live.status_code == 200
+    live_chunk = next(resp_live.response)
+    assert b"--frame" in live_chunk
+    assert b"Content-Type: image/jpeg" in live_chunk
+    assert b"\xff\xd8" in live_chunk
+
+    # 3. Test snapshot endpoint
+    snap_resp = client.get("/api/snapshot")
+    assert snap_resp.status_code == 200
+    assert snap_resp.content_type == "image/jpeg"
+    assert snap_resp.data.startswith(b"\xff\xd8")
+
+

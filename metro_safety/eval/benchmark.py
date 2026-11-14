@@ -96,7 +96,7 @@ def run_evaluation_suite(output_dir: Path | str = "eval_results") -> Dict[str, A
                 scenario_gesture_events.extend(g_evs)
 
                 for ev in r_evs + g_evs:
-                    dec = escalation.evaluate(ev, current_time=ts)
+                    dec = escalation.evaluate(event=ev, train_state=TrainState.ABSENT, current_time=ts)
                     latencies.append(dec.latency_ms)
 
             # Determine dominant prediction for this scenario

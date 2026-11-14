@@ -14,6 +14,7 @@ import json
 import cv2
 import numpy as np
 
+from typing import Optional, Any
 from metro_safety.config import load_config
 from metro_safety.perception.base import Detection
 from metro_safety.perception.frame_source import create_frame_source
@@ -39,7 +40,10 @@ def replay_clip(
     train_state_val: str = "ABSENT",
     show_window: bool = True,
     output_log: str = "data/recordings/replay_audit.json",
-    loop: bool = False
+    loop: bool = False,
+    hub: Optional[Any] = None,
+    buzzer: Optional[Any] = None,
+    max_frames: Optional[int] = None
 ):
     cfg = load_config(config_path)
     train_state = TrainState(train_state_val)
@@ -63,7 +67,10 @@ def replay_clip(
         track_intrusion_thresh=cfg["events"]["track_intrusion_consecutive_frames"],
         fall_drop_vel_thresh=cfg["events"].get("fall_drop_velocity_threshold", 14.0),
         fall_angle_thresh=cfg["events"].get("fall_angle_threshold", 40.0),
-        jump_vel_thresh=cfg["events"].get("jump_vertical_velocity_threshold", 12.0)
+        jump_vel_thresh=cfg["events"].get("jump_vertical_velocity_threshold", 12.0),
+        min_event_frames=cfg["events"].get("min_motion_duration_frames", 4),
+        min_drop_displacement=cfg["events"].get("fall_min_displacement_px", 10.0),
+        min_jump_displacement=cfg["events"].get("jump_min_displacement_px", 8.0)
     )
     learned_clf = LearnedEventClassifier()
     gesture_det = DistressGestureDetector()
@@ -131,19 +138,36 @@ def replay_clip(
             all_events = rule_events + learned_events + gesture_events
 
             for ev in all_events:
-                dec = escalation.evaluate(ev, frame)
+                dec = escalation.evaluate(event=ev, train_state=train_state, current_time=t_now, snapshot=frame)
                 kine = rule_clf.get_track_kinematics(ev.track_id)
-                print(f"[REPLAY EVENT] Frame {frame_idx:04d} (t={t_now:.2f}s) | Track #{ev.track_id:02d} -> {ev.event_type} [{dec.severity}] "
+                sev_name = dec.severity.name if hasattr(dec.severity, "name") else str(dec.severity)
+                ev_name = ev.event_type.name if hasattr(ev.event_type, "name") else str(ev.event_type)
+
+                print(f"[REPLAY EVENT] Frame {frame_idx:04d} (t={t_now:.2f}s) | Track #{ev.track_id:02d} -> {ev_name} [{sev_name}] "
                       f"| Zone: {ev.zone} | vy={kine['vy']} px/f | angle={kine['angle']} deg | conf={ev.confidence:.2f}")
-                events_logged.append({
+
+                ev_record = {
                     "frame": frame_idx,
                     "timestamp": t_now,
+                    "time_str": time.strftime("%H:%M:%S", time.localtime()),
                     "track_id": ev.track_id,
-                    "event_type": ev.event_type,
-                    "severity": dec.severity,
+                    "event_type": ev_name,
+                    "severity": sev_name,
                     "zone": ev.zone,
+                    "confidence": round(ev.confidence, 2),
+                    "action": dec.action_taken,
                     "kinematics": kine
-                })
+                }
+                events_logged.append(ev_record)
+
+                if buzzer and sev_name != "DISTRESS":
+                    buzzer.trigger(sev_name)
+                if hub:
+                    hub.push_event(ev_record)
+
+            if max_frames and frame_idx >= max_frames:
+                print(f"\nReached max frame limit ({max_frames}).")
+                break
 
         if show_window:
             display = frame.copy()
@@ -163,15 +187,15 @@ def replay_clip(
 
                 # Keypoints
                 if trk.keypoints is not None:
-                    kpts = trk.keypoints.astype(int)
+                    kpts = trk.keypoints
                     for pt in kpts:
                         if pt[0] > 0 and pt[1] > 0:
-                            cv2.circle(display, (pt[0], pt[1]), 3, (0, 255, 0), -1)
+                            cv2.circle(display, (int(pt[0]), int(pt[1])), 3, (0, 255, 0), -1)
                     for p1, p2 in COCO_PAIRS:
                         if p1 < len(kpts) and p2 < len(kpts):
                             pt1, pt2 = kpts[p1], kpts[p2]
                             if pt1[0] > 0 and pt2[0] > 0:
-                                cv2.line(display, tuple(pt1), tuple(pt2), (255, 120, 0), 1)
+                                cv2.line(display, (int(pt1[0]), int(pt1[1])), (int(pt2[0]), int(pt2[1])), (255, 120, 0), 1)
 
                 # Kinematic HUD Box above person
                 overlay_text = f"ID #{tid:02d} | {kine['zone']} | vy:{kine['vy']:+05.1f} | angle:{kine['angle']:04.1f}deg"

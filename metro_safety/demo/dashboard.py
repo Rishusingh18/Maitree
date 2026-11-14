@@ -255,7 +255,7 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                     <span style="font-size: 12px; color: var(--text-muted);">Drop Stale: ON | Low-Latency MJPEG</span>
                 </div>
                 <div class="video-container">
-                    <img id="live-video" src="/video_feed" alt="CCTV Stream">
+                    <img id="live-video" src="/video_feed" alt="CCTV Stream" onerror="this.onerror=null; setTimeout(() => { this.src='/video_feed?t=' + Date.now(); }, 1500);">
                     <div class="video-overlay-badge">
                         <span class="badge badge-l3" id="ets-badge">ETS READY</span>
                     </div>
@@ -545,10 +545,23 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
     @app.route("/video_feed")
     def video_feed():
         """MJPEG video stream endpoint for dashboard <img>."""
-        return Response(
+        resp = Response(
             active_hub.mjpeg_generator(),
             mimetype="multipart/x-mixed-replace; boundary=frame"
         )
+        resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate, pre-check=0, post-check=0, max-age=0'
+        resp.headers['Pragma'] = 'no-cache'
+        resp.headers['Expires'] = '0'
+        return resp
+
+    @app.route("/video_frame.jpg")
+    @app.route("/api/snapshot")
+    def video_frame():
+        """Returns the latest single JPEG snapshot frame."""
+        jpeg_bytes = active_hub.get_latest_jpeg()
+        resp = Response(jpeg_bytes, mimetype="image/jpeg")
+        resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate, max-age=0'
+        return resp
 
     @app.route("/api/telemetry")
     def api_telemetry():

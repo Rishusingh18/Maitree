@@ -96,3 +96,4 @@ def test_buzzer_clear_timeout():
         assert buzzer.get_status()["pattern"] == "OFF"
     finally:
         buzzer.stop()
+

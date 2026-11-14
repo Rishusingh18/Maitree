@@ -247,3 +247,4 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($template)
                 logger.info(f"Telegram notification response status: {resp.status}")
         except Exception as e:
             logger.debug(f"Optional Telegram dispatch failed (non-critical): {e}")
+

@@ -37,9 +37,16 @@ This document logs all engineering assumptions made during the design, developme
 - **Privacy**: No facial recognition, facial landmarking, biometric profiling, or persistent cross-session tracking. Track IDs are ephemeral integer tokens reset per video session.
 
 ## 6. Live Phone Pipeline & Control Room Dashboard Integration
-- **Camera Stream**: Phone camera streams over local Wi-Fi at `http://192.168.1.8:8080/video`. Threaded reader drops stale frames (buffer size 1) to eliminate video lag.
+- **Camera Stream**: Phone camera streams over local Wi-Fi at `http://192.168.1.32:8080/video`. Threaded reader drops stale frames (buffer size 1) to eliminate video lag.
 - **Hardware Buzzer**: Real audible alarm on laptop uses Windows `winsound.Beep` in an asynchronous background daemon thread so computer vision inference is never blocked. Non-Windows fallbacks emit terminal bells or silent stubs.
 - **Buzzer Patterns & Clear Logic**: L1 emits a short single pulse (800Hz), L2 emits a repeating pulse (1200Hz), and L3 emits an alternating high-intensity siren (1800Hz / 2200Hz). Buzzer continues until either an operator clicks "Acknowledge" or all tracks remain clear of the danger zone for 4.0 continuous seconds.
 - **Overlooker Notifications**: Windows desktop notifications are dispatched via PowerShell WinRT toast API. Outbound webhooks (ntfy.sh / Telegram) are optional and disabled by default for 100% offline security. A 10-second per-event-type cooldown prevents alert storms.
 - **Telemetry Transparency**: Synthetic benchmark accuracy is explicitly labeled as "synthetic benchmark" on the dashboard, distinguishing it from live operational telemetry (live FPS, live latency).
+
+## 7. Escalation Architecture & Robustness Bugfixes
+- **Signature & Type Safety**: `EscalationEngine.evaluate` requires `(event, train_state=None, current_time=None, snapshot=None)`. Explicit runtime type checks intercept misplaced numpy arrays or invalid types with informative `TypeError` exceptions.
+- **Fault-Tolerant Pipeline**: Per-frame and per-event processing in `live.py` are wrapped in granular try/except blocks with full traceback logging. Any exception in hardware buzzer, Windows notifications, webhook push, or web publishing is isolated so video processing and tracking never halt.
+- **Confidence Calibration**: No model or classifier ever reports 100% (1.0) confidence; all confidences are strictly calibrated and capped at 0.99 via `SafetyEvent.__post_init__`.
+- **False-Alert Gating**: Deliberate jump and accidental fall events require sustained motion across $\ge 4$ observation frames, cumulative vertical displacement ($\ge 10$ px for fall, $\ge 8$ px for jump), and multi-frame downward velocity confirmation.
+
 

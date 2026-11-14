@@ -174,7 +174,7 @@ class LearnedEventClassifier:
                 feats = FeatureExtractor.extract_sequence_features(window, self.window_size)
                 probs = self.model.predict_proba([feats])[0]
                 pred_idx = int(np.argmax(probs))
-                conf = float(probs[pred_idx])
+                conf = min(0.99, float(probs[pred_idx]))
                 predicted_label = self.CLASSES[pred_idx]
 
                 if predicted_label != "NORMAL" and conf > 0.60:

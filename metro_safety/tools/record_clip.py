@@ -21,7 +21,7 @@ def record_clip(
     show_window: bool = True
 ):
     cfg = load_config(config_path)
-    resolved_source = source_uri or cfg["system"].get("source", "http://192.168.1.8:8080/video")
+    resolved_source = source_uri or cfg["system"].get("source", "http://192.168.1.32:8080/video")
 
     out_file = Path(output_path)
     out_file.parent.mkdir(parents=True, exist_ok=True)
