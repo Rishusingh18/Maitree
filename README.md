@@ -52,11 +52,17 @@ flowchart TD
 ## 📊 Evaluation & Benchmark Results
 Evaluated on comprehensive synthetic kinematic sequences simulating standard walking, falls, jumps, line crossings, and distress gestures:
 - **Baseline Target (DMRC RFP Spec)**: `> 90% Accuracy`
-- **Rule-Based State Machine Accuracy**: `94.4%` (Target Met: **YES**)
-- **Learned Temporal Classifier (GBDT) Accuracy**: `100.0%` (Target Met: **YES**)
-- **Mean Processing Speed**: `436.0 FPS` (Feature pipeline), `>35 FPS` (Full YOLOv8n CPU pipeline)
-- **Mean Escalation Latency**: `0.53 ms` (95th percentile: `0.98 ms`)
-- **False Alert Rate on Normal Footage**: `0.00 false alerts / hour`
+- **Rule-Based State Machine Accuracy**: `94.4%` (synthetic benchmark only; DMRC >90% target not demonstrated on real footage)
+- **Learned Temporal Classifier (GBDT) Accuracy**: `100.0%` (synthetic benchmark only; DMRC >90% target not demonstrated on real footage)
+- **Measured Throughput (Full HD 1080p Phone Stream Input)**:
+  - **Display / Main Loop Rate**: `14.3 FPS` (measured on 1080p recorded phone stream)
+  - **Detector Forward Pass Rate**: `23.5 FPS` (true YOLOv8n-pose forward pass on CPU, median `42.6 ms`, imgsz 320)
+  - **Synthetic Demo Clip Rate**: `~60 FPS` (640x480 demo clip)
+  - **Kinematic Feature Pipeline Alone**: `436.0 FPS` (feature extraction without video I/O)
+- **End-to-End Latency (Capture to JPEG Publish on 1080p input)**: `90.1 ms` median (`162.4 ms` p95)
+- **Rule-Engine Escalation Latency Only**: `0.53 ms` median (`0.98 ms` p95, rule evaluation only)
+- **Operational False-Alert Rate**: Unmeasured on live continuous crowd footage (see KNOWN_ISSUES.md)
+- **Automated Test Suite**: **57 passed, 0 failed** (`pytest tests -v`)
 
 Confusion matrix visualization is saved in [eval_results/confusion_matrices.png](file:///c:/Users/kunal/VIHAAN%20X/eval_results/confusion_matrices.png) and full metrics are detailed in [eval_results/EVALUATION.md](file:///c:/Users/kunal/VIHAAN%20X/eval_results/EVALUATION.md).
 

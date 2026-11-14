@@ -153,3 +153,40 @@ def test_simulated_camera_shake_asserts_zero_l3_events():
     # Strict assertion: Zero L3 events occurred during camera shake!
     assert len(l3_events) == 0, f"Expected 0 L3 events during camera shake, got {len(l3_events)}"
     assert len(l2_events) > 0, "Expected L2 review alerts to be retained (never dropped)"
+
+
+def test_camera_motion_reason_accuracy_and_still_frame_clearing():
+    """Verify reason text mathematically matches the state and clears after N still frames."""
+    still_n = 4
+    detector = CameraMotionDetector(motion_threshold_px=5.0, still_frames_to_clear=still_n)
+
+    np.random.seed(99)
+    bg = np.zeros((480, 640, 3), dtype=np.uint8)
+    for _ in range(80):
+        cv2.circle(bg, (np.random.randint(20, 620), np.random.randint(20, 460)), 5, (200, 200, 200), -1)
+
+    # Frame 1: Initial reference
+    detector.estimate_motion(bg)
+
+    # Frame 2: Sudden shake of 15 pixels (> 5.0 px threshold)
+    M_shake = np.float32([[1, 0, 15], [0, 1, 12]])
+    shaken = cv2.warpAffine(bg, M_shake, (640, 480))
+    is_moving, disp, blur, reason = detector.estimate_motion(shaken)
+
+    assert is_moving is True
+    assert disp > 5.0
+    assert f"{disp:.1f} px > 5.0 px threshold" in reason
+
+    # Subsequent still frames (no motion, identical to shaken frame)
+    for i in range(1, still_n):
+        is_moving_still, disp_still, _, reason_still = detector.estimate_motion(shaken)
+        # Reason must NOT claim disp > 5.0 px when disp <= 5.0 px!
+        assert "px > 5.0 px" not in reason_still
+        assert is_moving_still is True, f"Banner should remain active during still clearing window (frame {i})"
+        assert f"Camera stabilizing ({i}/{still_n} still frames" in reason_still
+
+    # Frame after N still frames: Must fully clear!
+    is_moving_cleared, disp_cleared, _, reason_cleared = detector.estimate_motion(shaken)
+    assert is_moving_cleared is False, "Camera motion banner failed to clear after N still frames"
+    assert reason_cleared == "Camera stable"
+

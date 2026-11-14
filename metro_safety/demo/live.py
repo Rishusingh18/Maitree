@@ -203,6 +203,7 @@ def run_live_pipeline(
     perf_motion = collections.deque(maxlen=100)
     perf_draw = collections.deque(maxlen=100)
     perf_encode = collections.deque(maxlen=100)
+    perf_e2e = collections.deque(maxlen=100)
 
     last_cam_moving = False
     last_cam_disp = 0.0
@@ -512,10 +513,11 @@ def run_live_pipeline(
                     logger.exception(f"[Live] Error updating dashboard frame: {pub_err}")
                 perf_encode.append((time.perf_counter() - t0_enc) * 1000.0)
 
-                # Overall FPS and Latency Calculation
+                # End-to-end latency from capture timestamp to JPEG publish
                 t_frame_end = time.perf_counter()
-                latency_ms = (t_frame_end - t_start) * 1000.0
-                latency_history.append(latency_ms)
+                e2e_ms = (t_frame_end - t0_cap) * 1000.0
+                perf_e2e.append(e2e_ms)
+                latency_history.append(e2e_ms)
                 if len(latency_history) > 30:
                     latency_history.pop(0)
 
@@ -527,15 +529,22 @@ def run_live_pipeline(
                         fps_history.pop(0)
 
                 curr_fps = float(np.mean(fps_history)) if fps_history else 0.0
-                curr_lat = float(np.mean(latency_history)) if latency_history else 0.0
+                curr_lat = float(np.median(perf_e2e)) if perf_e2e else 0.0
+                e2e_p95 = float(np.percentile(perf_e2e, 95)) if perf_e2e else 0.0
+
+                fwd_timings = async_inference.get_forward_timings()
+                det_fps, det_lat = async_inference.get_telemetry()
+                if det_fps <= 0.0:
+                    det_fps = round(1000.0 / fwd_timings["median_ms"], 1) if fwd_timings["median_ms"] > 0 else curr_fps
 
                 stage_timings = {
                     "capture": {"median_ms": round(float(np.median(perf_capture)), 2), "p95_ms": round(float(np.percentile(perf_capture, 95)), 2)},
-                    "detect": {"median_ms": round(float(np.median(perf_detect)), 2), "p95_ms": round(float(np.percentile(perf_detect, 95)), 2)},
+                    "detect_forward_pass": fwd_timings if fwd_timings["median_ms"] > 0 else {"median_ms": round(float(np.median(perf_detect)), 2), "p95_ms": round(float(np.percentile(perf_detect, 95)), 2)},
                     "track": {"median_ms": round(float(np.median(perf_track)), 2), "p95_ms": round(float(np.percentile(perf_track, 95)), 2)},
                     "motion_estimation": {"median_ms": round(float(np.median(perf_motion)), 2), "p95_ms": round(float(np.percentile(perf_motion, 95)), 2)},
                     "draw": {"median_ms": round(float(np.median(perf_draw)), 2), "p95_ms": round(float(np.percentile(perf_draw, 95)), 2)},
                     "encode": {"median_ms": round(float(np.median(perf_encode)), 2), "p95_ms": round(float(np.percentile(perf_encode, 95)), 2)},
+                    "end_to_end": {"median_ms": round(curr_lat, 2), "p95_ms": round(e2e_p95, 2)}
                 }
 
                 # Update dashboard telemetry with honest FPS, latency, and stage timings

@@ -68,7 +68,9 @@ class LiveHub:
         self.stage_timings: Dict[str, Dict[str, float]] = {}
         self.synthetic_accuracy_label: str = "100.0% (synthetic benchmark)"
         self.train_state: str = "ABSENT"
+        self._explicit_train_state: bool = False
         self.ets_status: str = "DISENGAGED"  # DISENGAGED | ARMED | ENGAGED
+        self._explicit_ets_status: bool = False
         self.cctv_status: str = "OPERATIONAL"
 
         # Control States
@@ -328,9 +330,15 @@ class LiveHub:
                 mtime = TELEMETRY_CACHE_PATH.stat().st_mtime
                 if (time.time() - mtime) < 4.0:
                     cached = json.loads(TELEMETRY_CACHE_PATH.read_text())
-                    for k in ["live_fps", "detector_fps", "live_latency_ms", "train_state", "ets_status", "is_fallback", "source_target", "retry_status"]:
+                    for k in ["live_fps", "detector_fps", "live_latency_ms", "is_fallback", "source_target", "retry_status"]:
                         if k in cached:
                             res[k] = cached[k]
+                    if "train_state" in cached:
+                        if not getattr(self, "_explicit_train_state", False):
+                            res["train_state"] = cached["train_state"]
+                    if "ets_status" in cached:
+                        if not getattr(self, "_explicit_ets_status", False):
+                            res["ets_status"] = cached["ets_status"]
                     res["is_online"] = True
             except Exception:
                 pass
@@ -486,18 +494,34 @@ class LiveHub:
         val = str(new_state).upper()
         with self._lock:
             self.train_state = val
+            self._explicit_train_state = True
             if self.train_state_provider:
                 try:
                     from metro_safety.perception.train_state import TrainState
                     self.train_state_provider.set_state(TrainState(val))
                 except Exception:
                     pass
+            try:
+                if TELEMETRY_CACHE_PATH.exists():
+                    cached = json.loads(TELEMETRY_CACHE_PATH.read_text())
+                    cached["train_state"] = val
+                    TELEMETRY_CACHE_PATH.write_text(json.dumps(cached))
+            except Exception:
+                pass
         return {"status": "ok", "train_state": val}
 
     def trip_ets(self) -> Dict[str, Any]:
         with self._lock:
             self.ets_status = "ENGAGED"
+            self._explicit_ets_status = True
             logger.warning("[SAFETY TRIP] Emergency Trip Switch manually engaged by Operator!")
+            try:
+                if TELEMETRY_CACHE_PATH.exists():
+                    cached = json.loads(TELEMETRY_CACHE_PATH.read_text())
+                    cached["ets_status"] = "ENGAGED"
+                    TELEMETRY_CACHE_PATH.write_text(json.dumps(cached))
+            except Exception:
+                pass
 
         self.push_event({
             "id": f"ETS-{int(time.time()*1000)}",
@@ -517,7 +541,15 @@ class LiveHub:
     def reset_ets(self) -> Dict[str, Any]:
         with self._lock:
             self.ets_status = "DISENGAGED"
+            self._explicit_ets_status = True
             logger.info("[SAFETY TRIP] Emergency Trip Switch reset to DISENGAGED.")
+            try:
+                if TELEMETRY_CACHE_PATH.exists():
+                    cached = json.loads(TELEMETRY_CACHE_PATH.read_text())
+                    cached["ets_status"] = "DISENGAGED"
+                    TELEMETRY_CACHE_PATH.write_text(json.dumps(cached))
+            except Exception:
+                pass
 
         self.push_event({
             "id": f"ETS-RST-{int(time.time()*1000)}",

@@ -32,23 +32,27 @@ The complete AI/ML software suite for the **AI Metro Platform Safety System** ha
 
 ## 2. Key Metrics & Benchmark Results
 - **DMRC Target**: `> 90% Detection Accuracy`
-- **Learned GBDT Accuracy**: **100.0%** (Target Met)
-- **Rule-Based Classifier Accuracy**: **94.4%** (Target Met)
+- **Learned GBDT Accuracy**: **100.0%** (synthetic benchmark only; DMRC >90% target not demonstrated on real footage)
+- **Rule-Based Classifier Accuracy**: **94.4%** (synthetic benchmark only; DMRC >90% target not demonstrated on real footage)
 - **Confidence Calibration**: Strictly calibrated and capped at **0.99** (never reports 100%)
 - **False-Alert Gating**: Minimum duration ($\ge 4$ frames) and displacement ($\ge 10$ px fall, $\ge 8$ px jump)
-- **Camera-Motion Gate**: Sparse LK optical flow on background features + blur detector capping falls/jumps at Level 2 with `"CAMERA MOVING: needs operator review"` (0 false L3 alerts during camera movement)
+- **Camera-Motion Gate**: Sparse LK optical flow on background features + blur detector capping falls/jumps at Level 2 with `"CAMERA MOVING: needs operator review"` and automatic banner clearing after 5 still frames (0 false L3 alerts during camera movement)
 - **Strict Zone Semantics**: Persons outside platform/track zones or in `"ignore"` areas (e.g. seating) are discarded
 - **Polygon Validation**: Refuses self-intersecting (bowtie) polygons on startup; centroid-sorting auto-repair hotkey `'f'`; backup saved to `config.yaml.bak`
-- **Dashboard Video Verification**: Verified with Playwright Chromium (`naturalWidth > 0`, active pixel changes over 3s, matching producer/server PID, 60 JPEG parts / 5s, mean pixel intensity = 35.58 > 5.0)
+- **Dashboard Video Verification**: Verified with Playwright Chromium (`naturalWidth > 0`, active pixel changes over 3s, matching producer/server PID, 60 JPEG parts / 5s, mean pixel intensity = 35.58 > 5.0, zero leaked script source text in document body)
 - **Event Deduplication**: 5.0-second cooldown per `(track_id, event_type)` preventing duplicate alert storms
 - **Fallback Transparency**: Prominent amber HUD and web banner when phone stream drops, with live background reconnection probe and auto-switchback; synthetic events marked `[DEMO]`
-- **Live Pipeline Speed**: **25+ FPS** display & capture loop, **15.0 - 20.0 FPS** inference on CPU (`AsyncInferenceWorker`, `imgsz=320`), >400 FPS (Kinematic pipeline alone)
-- **Mean Alert Latency**: **0.53 ms** (95th percentile: **0.98 ms**)
-- **Test Suite Results**: **56 passed, 0 failed** (`pytest tests -v`)
+- **Measured Pipeline Throughput**:
+  - **Full HD (1080p) Phone Stream Input**: **14.3 FPS display rate**, **23.5 FPS detector inference rate** (median model forward pass: 42.6 ms on CPU, imgsz=320), **90.1 ms median end-to-end latency** (162.4 ms p95)
+  - **Synthetic Demo Clip (640x480)**: ~60 FPS display rate
+  - **Kinematic Rule Pipeline Alone**: >400 FPS (feature evaluation without video I/O)
+- **Rule-Engine Escalation Latency Only**: **0.53 ms** (95th percentile: **0.98 ms**, rule classification evaluation only)
+- **Operational False-Alert Rate**: Unmeasured on live continuous crowd footage (see KNOWN_ISSUES.md)
+- **Test Suite Results**: **57 passed, 0 failed** (`pytest tests -v`)
 - **Train State Panel Agreement**: "Simulate Train Movement" button highlights strictly follow backend train state from `/api/telemetry` (not last click); header badge, telemetry, and panel always agree
 - **Dead Backend Detection & Auto-Recovery**: After 3 failed polls, shows red "BACKEND DISCONNECTED - data is stale" banner with last-update timestamp, disables control buttons, and replaces video with "No signal" placeholder; auto-recovers on reconnect; failed POSTs emit error toasts
 - **Action Verification & Session Tagging**: Verified with `requests` that Mute, Test Beep, Test Siren, ENGAGE ETS, Reset, and Acknowledge visibly update state in `/api/telemetry` and `/api/events`; all events tagged with unique `session_id`
-- **Granular Pipeline Profiling**: Measured across 6 stages (capture: 1.18 ms, detect: 1.99 ms, track: 0.17 ms, motion_estimation: 6.44 ms, draw: 2.08 ms, encode: 2.20 ms); sustained **63.7 FPS display rate**, **63.9 FPS detector rate**, and **19.6 ms end-to-end latency** on CPU
+- **Granular Pipeline Profiling (1080p input)**: Measured across stages (capture: 9.72 ms, detect forward pass: 42.63 ms, track: 0.01 ms, motion_estimation: 47.89 ms, draw: 16.79 ms, encode: 9.56 ms, end-to-end: 90.12 ms)
 
 ---
 

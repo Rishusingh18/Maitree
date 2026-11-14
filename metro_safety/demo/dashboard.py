@@ -720,22 +720,6 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
             };
         }
     </script>
-
-        // Live Poll Loops (Fast for telemetry, regular for events)
-        setInterval(updateTelemetry, 400);
-        setInterval(updateEvents, 1000);
-        updateTelemetry();
-        updateEvents();
-
-        // Optional SSE connection for instantaneous event push
-        if (!!window.EventSource) {
-            const evtSource = new EventSource("/api/events/stream");
-            evtSource.onmessage = function(e) {
-                updateEvents();
-                updateTelemetry();
-            };
-        }
-    </script>
 </body>
 </html>
     """

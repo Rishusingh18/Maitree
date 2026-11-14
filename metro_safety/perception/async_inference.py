@@ -33,6 +33,9 @@ class AsyncInferenceWorker:
         # Honest telemetry
         self.inference_fps: float = 0.0
         self.inference_latency_ms: float = 0.0
+        self.forward_median_ms: float = 0.0
+        self.forward_p95_ms: float = 0.0
+        self.true_detector_fps: float = 0.0
         self._infer_history: List[float] = []
         self._fps_history: List[float] = []
         self._last_infer_time: float = time.perf_counter()
@@ -75,9 +78,17 @@ class AsyncInferenceWorker:
             return list(self._latest_detections)
 
     def get_telemetry(self) -> Tuple[float, float]:
-        """Returns measured (inference_fps, inference_latency_ms)."""
+        """Returns measured (true_detector_fps, forward_median_ms)."""
         with self._lock:
-            return self.inference_fps, self.inference_latency_ms
+            return self.true_detector_fps, self.forward_median_ms
+
+    def get_forward_timings(self) -> dict:
+        """Returns honest median and p95 ms of true model forward pass."""
+        with self._lock:
+            return {
+                "median_ms": round(self.forward_median_ms, 2),
+                "p95_ms": round(self.forward_p95_ms, 2)
+            }
 
     def _worker_loop(self):
         while self._running:
@@ -102,19 +113,16 @@ class AsyncInferenceWorker:
 
             t1 = time.perf_counter()
             lat = (t1 - t0) * 1000.0
-            dt = t1 - self._last_infer_time
-            self._last_infer_time = t1
 
             with self._lock:
                 self._latest_detections = dets
                 self._infer_history.append(lat)
-                if len(self._infer_history) > 20:
+                if len(self._infer_history) > 100:
                     self._infer_history.pop(0)
-                if dt > 0:
-                    self._fps_history.append(1.0 / dt)
-                    if len(self._fps_history) > 20:
-                        self._fps_history.pop(0)
 
-                self.inference_latency_ms = float(np.mean(self._infer_history))
-                self.inference_fps = float(np.mean(self._fps_history))
+                self.forward_median_ms = float(np.median(self._infer_history))
+                self.forward_p95_ms = float(np.percentile(self._infer_history, 95))
+                self.true_detector_fps = round(1000.0 / self.forward_median_ms, 1) if self.forward_median_ms > 0 else 0.0
+                self.inference_latency_ms = self.forward_median_ms
+                self.inference_fps = self.true_detector_fps
 

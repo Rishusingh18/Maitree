@@ -106,6 +106,21 @@ def test_dashboard_video_renders_in_real_browser():
             }""")
 
             assert snap1 != snap2, "Video feed image appears frozen (pixel snapshot did not change over 2.5s)"
+
+            # Assert no raw JavaScript source code leaks into document.body.innerText
+            body_text = page.evaluate("() => document.body.innerText")
+            script_snippets = [
+                "setInterval(updateTelemetry",
+                "setInterval(updateEvents",
+                "function updateTelemetry",
+                "function updateEvents",
+                "EventSource",
+                "// Live Poll Loops",
+                "apiPost("
+            ]
+            for snippet in script_snippets:
+                assert snippet not in body_text, f"Raw JavaScript text leaked into document.body: '{snippet}'"
+
             browser.close()
 
     finally:

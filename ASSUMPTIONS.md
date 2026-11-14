@@ -70,5 +70,11 @@ This document logs all engineering assumptions made during the design, developme
 - **Action Verification & Session Tagging**: Operator actions (Mute Buzzer, Test Beep, Test Siren, ENGAGE ETS, Reset ETS, Acknowledge Alarm) each visibly change backend state in `/api/telemetry` and publish structured audit records into `/api/events`. Each operational session generates a unique `session_id` (`SES-<uuid>`), tagging all events so historical disk records can be distinguished from current runs.
 - **Granular Stage Profiling & Safe CPU Speedups**: The live pipeline tracks execution latency across 6 distinct stages (`capture`, `detect`, `track`, `motion_estimation`, `draw`, `encode`) using rolling 100-frame circular buffers to compute median and $p95$ percentiles. Safe optimizations—including optical flow decimation (evaluating sparse LK motion every 2 frames), 320px pose inference size, and JPEG quality 70—enable sustained $>60$ FPS display loop rates and $\sim 64$ FPS decoupled pose inference on CPU with $<20\text{ ms}$ end-to-end latency.
 
+## 11. Performance Transparency, Motion Reason Consistency & Evaluation Scope
+- **Camera Motion State Truth**: Camera motion reason strings strictly reflect the measured motion relative to the threshold. When displacement drops below threshold, the message transitions to `"Camera stabilizing (K/N still frames, X.X px)"` and strictly clears after $N$ still frames. It is guaranteed to never format a message claiming `disp > threshold` when `disp <= threshold`.
+- **Honest Profiling Baseline**: Operational performance is benchmarked on Full HD (1920x1080) phone camera input (`data/recordings/phone_stream_recorded.mp4`). True detector inference is measured on the model forward pass (`self.detector.detect()`, median 42.6 ms / 23.5 FPS), and end-to-end latency is measured from frame capture timestamp to JPEG publish (median 90.1 ms). The 60+ FPS previously observed is explicitly documented as applying solely to synthetic 640x480 demo clips.
+- **Evaluation & Benchmark Reality**: The >90% accuracy figures (100.0% GBDT, 94.4% rule-based) are synthetic kinematic test benchmarks and have not been demonstrated on real crowd footage. False-alert rate is documented as unmeasured under live operational conditions.
+
+
 
 
