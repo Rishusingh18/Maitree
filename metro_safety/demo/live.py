@@ -140,8 +140,11 @@ def run_live_pipeline(
     # 4. Initialize Perception & Safety Modules
     zm = ZoneManager(cfg["zones"])
     tracker = ByteTracker(
-        track_high_thresh=cfg["tracking"]["track_high_thresh"],
-        match_thresh=cfg["tracking"]["match_thresh"]
+        track_high_thresh=cfg["tracking"].get("track_high_thresh", 0.22),
+        track_low_thresh=cfg["tracking"].get("track_low_thresh", 0.12),
+        new_track_thresh=cfg["tracking"].get("new_track_thresh", 0.18),
+        track_buffer=cfg["tracking"].get("track_buffer", 30),
+        match_thresh=cfg["tracking"].get("match_thresh", 0.6)
     )
     rule_clf = RuleBasedEventClassifier(
         line_crossing_thresh=cfg["events"]["line_crossing_consecutive_frames"],

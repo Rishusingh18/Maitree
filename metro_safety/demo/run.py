@@ -62,8 +62,11 @@ def run_pipeline(
 
     zm = ZoneManager(cfg["zones"])
     tracker = ByteTracker(
-        track_high_thresh=cfg["tracking"]["track_high_thresh"],
-        match_thresh=cfg["tracking"]["match_thresh"]
+        track_high_thresh=cfg["tracking"].get("track_high_thresh", 0.22),
+        track_low_thresh=cfg["tracking"].get("track_low_thresh", 0.12),
+        new_track_thresh=cfg["tracking"].get("new_track_thresh", 0.18),
+        track_buffer=cfg["tracking"].get("track_buffer", 30),
+        match_thresh=cfg["tracking"].get("match_thresh", 0.6)
     )
     rule_clf = RuleBasedEventClassifier(
         line_crossing_thresh=cfg["events"]["line_crossing_consecutive_frames"],
@@ -314,13 +317,17 @@ def run_pipeline(
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, box_color, 2)
                 cv2.circle(annotated, (int(foot[0]), int(foot[1])), 5, (0, 0, 255), -1)
 
-                # COCO Skeleton
+                # COCO Skeleton & Keypoint joints
                 if det.keypoints is not None:
                     for p1_i, p2_i in COCO_PAIRS:
                         p1 = det.keypoints[p1_i]
                         p2 = det.keypoints[p2_i]
-                        if p1[2] > 0.35 and p2[2] > 0.35:
+                        if p1[2] > 0.20 and p2[2] > 0.20:
                             cv2.line(annotated, (int(p1[0]), int(p1[1])), (int(p2[0]), int(p2[1])), (255, 255, 0), 2)
+                    for ki in range(17):
+                        kp = det.keypoints[ki]
+                        if kp[2] > 0.20:
+                            cv2.circle(annotated, (int(kp[0]), int(kp[1])), 3, (0, 255, 255), -1)
 
             # Severity Banner
             banner_h = 75
