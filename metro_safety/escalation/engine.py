@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Any, Union
 import time
+import numpy as np
 
 from metro_safety.events.models import SafetyEvent, EventType, SeverityLevel
 from metro_safety.escalation.adapters import (
@@ -73,6 +74,11 @@ class EscalationEngine:
         **kwargs
     ) -> EscalationDecision:
         """Process event, determine severity ladder action, trigger adapters, and measure latency."""
+        if isinstance(train_state, np.ndarray):
+            raise TypeError("Invalid type for 'train_state': received numpy.ndarray. Pass the frame as snapshot=<frame> explicitly.")
+        if isinstance(current_time, np.ndarray):
+            raise TypeError("Invalid type for 'current_time': received numpy.ndarray. Pass the frame as snapshot=<frame> explicitly.")
+
         # Handle positional swap where 2nd arg was current_time (e.g., evaluate(ev, 1700000.0))
         if isinstance(train_state, (int, float)) and current_time is None:
             current_time = float(train_state)
@@ -111,14 +117,25 @@ class EscalationEngine:
 
         # 2. Confirmed Fall or Jump -> Immediate Level 3 Emergency
         elif ev_type in [EventType.ACCIDENTAL_FALL, EventType.DELIBERATE_JUMP]:
-            severity = SeverityLevel.L3
-            action_msg = f"CRITICAL: {ev_type.value} on track! Actuating platform buzzer, alarm, and emergency stop recommendation."
-            buzzer_active = True
-            cr_alert = True
-            self.active_audible_hazards[event.track_id] = ev_type
-            self.buzzer.activate(self.platform_id, pattern="CONTINUOUS_HIGH")
-            self._safe_send_alert(event, severity, action_msg)
-            ets_active = self.trip_switch.trigger_stop(event, self.station_id, self.platform_id)
+            is_camera_moving = getattr(event, "camera_motion", False)
+            if is_camera_moving:
+                severity = SeverityLevel.L2
+                action_msg = f"CAMERA MOVING: needs operator review - {getattr(event, 'motion_reason', 'Optical flow vibration')}"
+                buzzer_active = True
+                cr_alert = True
+                ets_active = False
+                self.active_audible_hazards[event.track_id] = ev_type
+                self.buzzer.activate(self.platform_id, pattern="PULSED")
+                self._safe_send_alert(event, severity, action_msg)
+            else:
+                severity = SeverityLevel.L3
+                action_msg = f"CRITICAL: {ev_type.value} on track! Actuating platform buzzer, alarm, and emergency stop recommendation."
+                buzzer_active = True
+                cr_alert = True
+                self.active_audible_hazards[event.track_id] = ev_type
+                self.buzzer.activate(self.platform_id, pattern="CONTINUOUS_HIGH")
+                self._safe_send_alert(event, severity, action_msg)
+                ets_active = self.trip_switch.trigger_stop(event, self.station_id, self.platform_id)
 
         # 3. Track Intrusion
         elif ev_type == EventType.TRACK_INTRUSION:
