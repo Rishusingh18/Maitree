@@ -1,0 +1,172 @@
+system:
+  station_id: DMRC_STN_042
+  platform_id: PL_DOWN_01
+  camera_id: CCTV_CAM_03
+  source: http://192.168.1.32:8080/video
+  fps_target: 25.0
+  frame_skip: 1
+  input_resolution:
+  - 1920
+  - 1080
+perception:
+  model_name: yolov8n-pose.pt
+  confidence_threshold: 0.35
+  iou_threshold: 0.45
+  device: cpu
+  inference_size: 320 # YOLO input resolution for real-time CPU performance (>=10 FPS)
+  frame_skip: 1 # Run inference every N frames (1 = full rate, 2 = 2x speed)
+tracking:
+  tracker_type: bytetrack
+  track_high_thresh: 0.5
+  track_low_thresh: 0.2
+  new_track_thresh: 0.6
+  track_buffer: 30
+  match_thresh: 0.8
+zones:
+  platform:
+  - - 524
+    - 82
+  - - 898
+    - 77
+  - - 782
+    - 1018
+  - - 21
+    - 999
+  - - 6
+    - 448
+  - - 520
+    - 84
+  yellow_band:
+  - - 908
+    - 77
+  - - 802
+    - 1021
+  - - 956
+    - 1027
+  - - 952
+    - 79
+  - - 909
+    - 76
+  track_bed:
+  - - 892
+    - 76
+  - - 772
+    - 1018
+  - - 802
+    - 1015
+  - - 906
+    - 74
+  - - 894
+    - 74
+  danger_zone:
+  - - 970
+    - 119
+  - - 972
+    - 118
+  - - 958
+    - 71
+  - - 958
+    - 65
+  - - 1060
+    - 113
+  - - 1064
+    - 77
+  - - 1070
+    - 50
+  - - 1104
+    - 110
+  - - 1180
+    - 116
+  - - 1382
+    - 20
+  - - 1588
+    - 42
+  - - 1588
+    - 45
+  - - 1887
+    - 1021
+  - - 1882
+    - 1026
+  - - 1698
+    - 965
+  - - 1545
+    - 1004
+  - - 1539
+    - 1003
+  - - 1358
+    - 1010
+  - - 1353
+    - 1013
+  - - 1000
+    - 1024
+  - - 975
+    - 1038
+  # Optional ignore zone (e.g. seating/vending areas where detections are discarded)
+  ignore: []
+train_state:
+  provider: simulated
+  default_state: ABSENT
+  schedule_file: data/train_schedule.json
+events:
+  # Consecutive frames inside yellow band to trigger LINE_CROSSING
+  line_crossing_consecutive_frames: 4
+  # Consecutive frames inside track bed to trigger TRACK_INTRUSION
+  track_intrusion_consecutive_frames: 3
+  # Minimum observation duration frames before confirming fall or jump motion
+  min_motion_duration_frames: 4
+  # Minimum cumulative vertical drop displacement (pixels) required for ACCIDENTAL_FALL
+  fall_min_displacement_px: 10.0
+  # Vertical drop velocity (pixels/frame) to classify an ACCIDENTAL_FALL
+  fall_drop_velocity_threshold: 18.0
+  # Torso angle deviation from vertical (degrees) indicating horizontal body collapse
+  fall_angle_threshold: 40.0
+  # Minimum cumulative displacement (pixels) required for DELIBERATE_JUMP
+  jump_min_displacement_px: 8.0
+  # Number of platform edge approach frames evaluated before jump leap
+  jump_approach_frames: 4
+  # Leaping downward vertical velocity threshold (pixels/frame) for DELIBERATE_JUMP
+  jump_vertical_velocity_threshold: 12.0
+  # Minimum forward/downward velocity to distinguish deliberate jump from normal walking
+  jump_forward_velocity_threshold: 8.0
+  # Temporal window of pose frames retained for temporal classification
+  temporal_window_size: 15
+gesture:
+  detection_window_frames: 18
+  min_persistence_frames: 4
+  max_cooldown_frames: 30
+  use_macro_fallback: true
+escalation:
+  auto_escalate_timer_sec: 60
+  ets_human_confirmation_required: true
+  ets_confirmation_timeout_sec: 5.0
+  webhook_url: http://127.0.0.1:5000/api/alert
+  alert_log_file: logs/safety_audit.log
+buzzer:
+  # Enable/disable laptop hardware buzzer audio
+  audio_enabled: true
+  # Seconds person must be clear of danger zone before buzzer turns off
+  clear_timeout_sec: 4.0
+  # Severity frequencies (Hz) and timings (ms)
+  l1_frequency: 800
+  l1_duration_ms: 150
+  l2_frequency: 1200
+  l2_beep_ms: 200
+  l2_pause_ms: 100
+  l3_low_freq: 1800
+  l3_high_freq: 2200
+overlooker:
+  # Cooldown between pings of the same incident type (seconds)
+  cooldown_sec: 10.0
+  # Audit log file for dispatched notifications
+  audit_log_file: logs/overlooker_audit.log
+  # Windows desktop notification toast
+  desktop_notification: true
+  # Optional outbound push (system works 100% offline when disabled)
+  ntfy:
+    enabled: false
+    topic: ""
+    server: "https://ntfy.sh"
+  telegram:
+    enabled: false
+    bot_token: ""
+    chat_id: ""
