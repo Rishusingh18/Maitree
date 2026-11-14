@@ -2,7 +2,7 @@
 Detects Line Crossing, Track Intrusion, Accidental Fall, and Deliberate Jump.
 """
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 import numpy as np
 
 from metro_safety.perception.base import Detection
@@ -30,7 +30,8 @@ class TrackStateMachine:
         track_intrusion_thresh: int = 3,
         fall_drop_vel_thresh: float = 14.0,
         fall_angle_thresh: float = 40.0,
-        jump_approach_frames: int = 4
+        jump_approach_frames: int = 4,
+        jump_vel_thresh: float = 12.0
     ):
         self.track_id = track_id
         self.line_cross_thresh = line_crossing_thresh
@@ -38,6 +39,7 @@ class TrackStateMachine:
         self.fall_vel_thresh = fall_drop_vel_thresh
         self.fall_angle_thresh = fall_angle_thresh
         self.jump_approach_frames = jump_approach_frames
+        self.jump_vel_thresh = jump_vel_thresh
 
         self.observations: List[TrackObservation] = []
         self.current_event: EventType = EventType.NORMAL
@@ -47,6 +49,21 @@ class TrackStateMachine:
         # Counters for hysteresis
         self.yellow_consecutive = 0
         self.track_consecutive = 0
+
+    @property
+    def latest_kinematics(self) -> Dict[str, Any]:
+        """Return latest zone, vertical velocity, and torso angle for debug overlay."""
+        if not self.observations:
+            return {"zone": "UNKNOWN", "vy": 0.0, "angle": 90.0}
+        latest = self.observations[-1]
+        vy = 0.0
+        if len(self.observations) >= 2:
+            vy = latest.torso_point[1] - self.observations[-2].torso_point[1]
+        return {
+            "zone": latest.zone,
+            "vy": round(vy, 1),
+            "angle": round(latest.torso_angle, 1)
+        }
 
     def update(
         self,
@@ -196,13 +213,21 @@ class RuleBasedEventClassifier:
         line_crossing_thresh: int = 4,
         track_intrusion_thresh: int = 3,
         fall_drop_vel_thresh: float = 14.0,
-        fall_angle_thresh: float = 40.0
+        fall_angle_thresh: float = 40.0,
+        jump_vel_thresh: float = 12.0
     ):
         self.line_thresh = line_crossing_thresh
         self.track_thresh = track_intrusion_thresh
         self.fall_vel_thresh = fall_drop_vel_thresh
         self.fall_angle_thresh = fall_angle_thresh
+        self.jump_vel_thresh = jump_vel_thresh
         self.track_machines: Dict[int, TrackStateMachine] = {}
+
+    def get_track_kinematics(self, track_id: int) -> Dict[str, Any]:
+        """Fetch latest kinematics for debug display."""
+        if track_id in self.track_machines:
+            return self.track_machines[track_id].latest_kinematics
+        return {"zone": "UNKNOWN", "vy": 0.0, "angle": 90.0}
 
     def process_frame(
         self,
@@ -228,7 +253,8 @@ class RuleBasedEventClassifier:
                     line_crossing_thresh=self.line_thresh,
                     track_intrusion_thresh=self.track_thresh,
                     fall_drop_vel_thresh=self.fall_vel_thresh,
-                    fall_angle_thresh=self.fall_angle_thresh
+                    fall_angle_thresh=self.fall_angle_thresh,
+                    jump_vel_thresh=self.jump_vel_thresh
                 )
 
             ev = self.track_machines[tid].update(
