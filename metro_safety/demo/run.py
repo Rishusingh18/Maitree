@@ -14,6 +14,7 @@ from pathlib import Path
 import json
 import os
 import time
+import threading
 import numpy as np
 import cv2
 
@@ -45,7 +46,8 @@ def run_pipeline(
     show_window: bool = True,
     max_frames: Optional[int] = None,
     fallback_video: str = "demo_clips/demo_fall.mp4",
-    loop_video: bool = False
+    loop_video: bool = False,
+    stop_event: Optional[threading.Event] = None
 ):
     cfg = load_config(config_path)
 
@@ -133,6 +135,10 @@ def run_pipeline(
 
     try:
         while True:
+            if stop_event and stop_event.is_set():
+                print("[Pipeline] Stop signal received. Exiting vision loop.")
+                break
+
             t_frame_start = time.perf_counter()
 
             # Read latest non-stale frame from threaded source
@@ -198,16 +204,36 @@ def run_pipeline(
             for ev in all_evs:
                 dec = escalation.evaluate(event=ev, train_state=train_state, current_time=frame_ts, snapshot=frame)
                 current_decision = dec
-                events_logged.append({
+                ev_data = ev.to_dict() if hasattr(ev, 'to_dict') else {}
+                log_entry = {
                     "frame": frame_idx,
                     "timestamp": round(frame_ts, 3),
-                    "event": ev.to_dict(),
+                    "event": ev_data,
                     "severity": dec.severity.value,
                     "action": dec.action_taken,
                     "buzzer_active": dec.buzzer_active,
                     "ets_triggered": dec.ets_triggered,
                     "latency_ms": dec.latency_ms
-                })
+                }
+                events_logged.append(log_entry)
+
+                # Push to live hub for dashboard & SSE streaming
+                try:
+                    hub.push_event({
+                        "id": f"EV-{int(frame_ts * 1000)}-{frame_idx}",
+                        "timestamp": frame_ts,
+                        "time_str": time.strftime("%H:%M:%S", time.localtime(frame_ts)),
+                        "track_id": getattr(ev, "track_id", 0),
+                        "event_type": getattr(ev, "event_type", ev_data.get("event_type", "INCIDENT")),
+                        "zone": getattr(ev, "zone", "platform"),
+                        "severity": dec.severity.value,
+                        "confidence": getattr(ev, "confidence", 0.95),
+                        "action": dec.action_taken,
+                        "is_demo": False,
+                        "session_id": hub.session_id
+                    })
+                except Exception:
+                    pass
 
             # Calculate live FPS & end-to-end processing latency
             t_now = time.perf_counter()
