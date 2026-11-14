@@ -107,6 +107,9 @@ class LiveHub:
             self.buzzer = buzzer
         if train_state_provider is not None:
             self.train_state_provider = train_state_provider
+            if getattr(self, "platform_id", None):
+                setattr(train_state_provider, "default_platform_id", self.platform_id)
+                setattr(train_state_provider, "_last_platform_id", self.platform_id)
         if zone_tracker is not None:
             self.zone_tracker = zone_tracker
 
@@ -399,6 +402,13 @@ class LiveHub:
                         "failure_reason": f"Tracker read error: {e}"
                     }
 
+            geofence_active = True
+            if self.train_state_provider and hasattr(self.train_state_provider, "is_geofence_active"):
+                try:
+                    geofence_active = self.train_state_provider.is_geofence_active(getattr(self, "platform_id", None))
+                except Exception:
+                    pass
+
             res = {
                 "session_id": self.session_id,
                 "cctv_id": self.cctv_id,
@@ -412,6 +422,7 @@ class LiveHub:
                 "stage_timings": self.stage_timings,
                 "synthetic_accuracy": self.synthetic_accuracy_label,
                 "train_state": self.train_state,
+                "geofence_active": geofence_active,
                 "ets_status": self.ets_status,
                 "buzzer": buzzer_info,
                 "active_alert": self.active_alert,
@@ -604,15 +615,17 @@ class LiveHub:
         })
         return {"status": "ok", "message": f"Test beep '{pat}' dispatched.", "pattern": pat}
 
-    def set_train_state(self, new_state: str) -> Dict[str, Any]:
+    def set_train_state(self, new_state: str, platform_id: Optional[str] = None) -> Dict[str, Any]:
         val = str(new_state).upper()
+        pid = platform_id or getattr(self, "platform_id", "PL_DOWN_01")
         with self._lock:
             self.train_state = val
             self._explicit_train_state = True
             if self.train_state_provider:
                 try:
                     from metro_safety.perception.train_state import TrainState
-                    self.train_state_provider.set_state(TrainState(val))
+                    st = TrainState.from_str(val) if hasattr(TrainState, "from_str") else TrainState(val)
+                    self.train_state_provider.set_state(st, platform_id=pid, source="dashboard")
                 except Exception:
                     pass
             try:
@@ -622,7 +635,7 @@ class LiveHub:
                     TELEMETRY_CACHE_PATH.write_text(json.dumps(cached))
             except Exception:
                 pass
-        return {"status": "ok", "train_state": val}
+        return {"status": "ok", "train_state": val, "platform_id": pid}
 
     def trip_ets(self) -> Dict[str, Any]:
         with self._lock:

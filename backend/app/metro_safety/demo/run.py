@@ -276,7 +276,15 @@ def run_pipeline(
 
             # 3. Behavior Events, Gestures & Anomaly Detection
             current_train_state = hub.train_state_provider.get_state() if hasattr(hub, "train_state_provider") and hub.train_state_provider else train_state
-            rule_evs = rule_clf.process_frame(frame_idx, frame_ts, tracked_dets, zm, current_train_state)
+            rule_evs = rule_clf.process_frame(
+                frame_idx,
+                frame_ts,
+                tracked_dets,
+                zm,
+                current_train_state,
+                train_state_provider=getattr(hub, "train_state_provider", None),
+                platform_id=getattr(hub, "platform_id", None)
+            )
             gest_evs = gesture_det.process_frame(frame_idx, frame_ts, tracked_dets, zm, current_train_state)
             cam_moving = getattr(rule_clf, "camera_moving", False)
             cam_reason = getattr(rule_clf, "motion_reason", "Optical flow vibration")

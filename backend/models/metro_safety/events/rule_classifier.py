@@ -82,7 +82,8 @@ class TrackStateMachine:
         timestamp: float,
         detection: Detection,
         zone_manager: ZoneManager,
-        train_state: TrainState
+        train_state: TrainState,
+        geofence_active: bool = True
     ) -> Optional[SafetyEvent]:
         """Update track state with new observation and evaluate event logic."""
         foot = detection.foot_anchor
@@ -115,12 +116,12 @@ class TrackStateMachine:
             self.track_consecutive = 0
 
         # Evaluate Fall vs Jump vs Intrusion vs Crossing
-        detected_event = self._classify_kinematics(train_state)
+        detected_event = self._classify_kinematics(train_state, geofence_active=geofence_active)
         if detected_event:
             return detected_event
         return None
 
-    def _classify_kinematics(self, train_state: TrainState) -> Optional[SafetyEvent]:
+    def _classify_kinematics(self, train_state: TrainState, geofence_active: bool = True) -> Optional[SafetyEvent]:
         if len(self.observations) < 2:
             return None
 
@@ -214,8 +215,8 @@ class TrackStateMachine:
                     meta={"track_consecutive": self.track_consecutive}
                 )
 
-        # 2. Check Line Crossing (in yellow band for N consecutive frames)
-        if self.yellow_consecutive >= self.line_cross_thresh:
+        # 2. Check Line Crossing (in yellow band for N consecutive frames, gated by geofence status)
+        if geofence_active and self.yellow_consecutive >= self.line_cross_thresh:
             return self._make_event(
                 EventType.LINE_CROSSING,
                 confidence=0.88,
@@ -293,11 +294,34 @@ class RuleBasedEventClassifier:
         zone_manager: ZoneManager,
         train_state: TrainState,
         camera_motion: bool = False,
-        motion_reason: str = ""
+        motion_reason: str = "",
+        geofence_active: Optional[bool] = None,
+        train_state_provider: Optional[Any] = None,
+        platform_id: Optional[str] = None
     ) -> List[SafetyEvent]:
         """Update each active track machine and collect all triggered safety events."""
         events: List[SafetyEvent] = []
         active_ids = set()
+
+        # Resolve geofence active status (fail-safe is active)
+        eff_geofence_active = True
+        if geofence_active is not None:
+            eff_geofence_active = bool(geofence_active)
+        elif train_state_provider is not None and hasattr(train_state_provider, "is_geofence_active"):
+            try:
+                eff_geofence_active = train_state_provider.is_geofence_active(
+                    platform_id=platform_id,
+                    timestamp=timestamp
+                )
+            except Exception as e:
+                logger.warning(f"Error checking is_geofence_active on provider: {e}")
+                eff_geofence_active = True
+        else:
+            st_val = train_state.value.upper() if hasattr(train_state, "value") else str(train_state).upper()
+            if st_val in ("STOPPED_DOORS_OPEN", "PRESENT"):
+                eff_geofence_active = False
+            else:
+                eff_geofence_active = True
 
         for det in tracked_detections:
             if det.track_id is None:
@@ -339,7 +363,8 @@ class RuleBasedEventClassifier:
                 timestamp=timestamp,
                 detection=det,
                 zone_manager=zone_manager,
-                train_state=train_state
+                train_state=train_state,
+                geofence_active=eff_geofence_active
             )
             if ev:
                 ev.camera_motion = bool(camera_motion)

@@ -446,10 +446,12 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                 <p style="font-size: 12px; color: var(--text-muted); margin-top: 0;">
                     Escalation severity elevates automatically when a train is approaching.
                 </p>
-                <div style="display: flex; gap: 8px; margin-top: 10px;" id="train-state-panel">
+                <div style="display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap;" id="train-state-panel">
                     <button class="btn btn-secondary" id="btn-train-absent" onclick="setTrainState('ABSENT')">Absent</button>
                     <button class="btn btn-secondary" id="btn-train-approaching" onclick="setTrainState('APPROACHING')">Approaching</button>
                     <button class="btn btn-secondary" id="btn-train-present" onclick="setTrainState('PRESENT')">Present</button>
+                    <button class="btn btn-secondary" id="btn-train-stopped-doors-open" onclick="setTrainState('STOPPED_DOORS_OPEN')">Stopped (Doors Open)</button>
+                    <button class="btn btn-secondary" id="btn-train-departing" onclick="setTrainState('DEPARTING')">Departing</button>
                 </div>
             </div>
         </div>
@@ -565,10 +567,21 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                     const btnAbsent = document.getElementById('btn-train-absent');
                     const btnApp = document.getElementById('btn-train-approaching');
                     const btnPres = document.getElementById('btn-train-present');
+                    const btnDoors = document.getElementById('btn-train-stopped-doors-open');
+                    const btnDep = document.getElementById('btn-train-departing');
                     if (btnAbsent && btnApp && btnPres) {
                         btnAbsent.classList.toggle('btn-active-train', state === 'ABSENT');
                         btnApp.classList.toggle('btn-active-train', state === 'APPROACHING');
                         btnPres.classList.toggle('btn-active-train', state === 'PRESENT');
+                        if (state === 'STOPPED_DOORS_OPEN') {
+                            btnPres.classList.add('btn-active-train');
+                        }
+                        if (btnDoors) {
+                            btnDoors.classList.toggle('btn-active-train', state === 'STOPPED_DOORS_OPEN');
+                        }
+                        if (btnDep) {
+                            btnDep.classList.toggle('btn-active-train', state === 'DEPARTING');
+                        }
                     }
 
                     // Camera Motion Banner
@@ -914,7 +927,8 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
             return jsonify({"status": "error", "message": "Unauthorized"}), 403
         data = request.get_json(silent=True) or {}
         new_state = data.get("state", "ABSENT")
-        return jsonify(active_hub.set_train_state(new_state))
+        platform_id = data.get("platform_id")
+        return jsonify(active_hub.set_train_state(new_state, platform_id=platform_id))
 
     @app.route("/api/alert", methods=["POST"])
     def api_external_alert():

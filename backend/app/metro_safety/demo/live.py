@@ -260,7 +260,7 @@ def run_live_pipeline(
 
                 frame_idx += 1
                 h, w = frame.shape[:2]
-                current_train_state = train_provider.get_state()
+                current_train_state = train_provider.get_state(platform_id=cfg["system"]["platform_id"], timestamp=frame_ts)
 
                 # 2. Perception / Detection Stage (Decoupled background inference)
                 t0_det = time.perf_counter()
@@ -342,7 +342,17 @@ def run_live_pipeline(
                 frame_zones_unverified = reg_result.zones_unverified
 
                 # 4. Behavior Classification & Anomaly Detection
-                rule_events = rule_clf.process_frame(frame_idx, frame_ts, tracks, zm, current_train_state)
+                rule_events = rule_clf.process_frame(
+                    frame_idx,
+                    frame_ts,
+                    tracks,
+                    zm,
+                    current_train_state,
+                    camera_motion=is_camera_moving,
+                    motion_reason=cam_reason,
+                    train_state_provider=train_provider,
+                    platform_id=cfg["system"]["platform_id"]
+                )
                 learned_events = learned_clf.process_frame(frame_idx, frame_ts, tracks, zm, current_train_state)
                 gesture_events = gesture_det.process_frame(frame_idx, frame_ts, tracks, zm, current_train_state)
                 anomaly_events = anomaly_engine.process_frame(

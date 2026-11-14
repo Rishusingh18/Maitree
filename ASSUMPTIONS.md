@@ -96,6 +96,21 @@ This document logs all engineering assumptions made during the design, developme
 - **Normalizing Flow Skeleton Anomaly Modeling**: Pretrained Spatio-Temporal Graph Normalizing Flows (STG-NF) model multi-frame skeletal kinematics to score anomalous poses/transitions in latent Gaussian space, complementing deterministic rule-based safety constraints.
 - **Camera Motion and Unverified Zone Capping**: During active camera movement (`camera_motion=True`) or unverified zone alignment (`zones_unverified=True`), anomaly events remain observable but are explicitly capped at Level 1 or Level 2 with low-trust flags and explanatory reason annotations.
 
+## 14. Train-State Gating for Yellow-Line Geofence
+- **Train State Lifecycle**: Modeled with enum states `ABSENT`, `APPROACHING`, `STOPPED_DOORS_OPEN`, `DEPARTING`, with `PRESENT` retained as a backward-compatible alias mapping to `STOPPED_DOORS_OPEN` semantics.
+- **Selective Yellow-Line Gating**:
+  - The yellow-line geofence is ACTIVE during `ABSENT`, `APPROACHING`, and `DEPARTING`.
+  - The yellow-line geofence is DISABLED strictly during `STOPPED_DOORS_OPEN` to permit normal passenger boarding and alighting without raising false alarms.
+  - On transition `STOPPED_DOORS_OPEN -> DEPARTING`, the geofence is re-enabled following a configurable grace period (default 2.0 seconds) to account for door closure and boarding completion.
+  - When the geofence is active, tracked persons whose foot contact points remain in the `yellow_band` for $N \ge 4$ consecutive frames trigger a `LINE_CROSSING` safety event.
+  - When disabled, yellow-line crossing alerts are suppressed, while person tracking, detection, and state machine updates continue running uninterrupted.
+- **Permanent Track-Zone Vigilance**: Track bed and danger zone intrusions (falls, jumps, walking on tracks) remain ALWAYS active across all train states, including `STOPPED_DOORS_OPEN`. Geofence deactivation never blinds track intrusion safety logic.
+- **Transition Persistence During Heartbeats**: Heartbeat updates (`touch` or same-state refresh) while `DEPARTING` update the record timestamp but preserve the original `transition_timestamp`, ensuring predictable grace period expiration.
+- **Fail-Safe Contract**: If the train state provider fails to deliver updates for $T > 10.0$ seconds (configurable) or if the platform state is unknown, the geofence autonomously defaults to ACTIVE to eliminate unmonitored safety gaps.
+- **Per-Platform State & Provenance**: State tracking is partitioned per platform ID (e.g. `PL_DOWN_01`, `PL_UP_02`). State changes log transition history, timestamps, source (UI, MQTT, timetable, vision), and previous state.
+- **Simulated & Vision Providers**: `SimulatedProvider` handles MQTT topic ingestion (`metro/train_state/<platform_id>`, `trains/<platform_id>/state`) and dashboard control updates. `VisionProvider` provides an interface-compliant stub with per-platform state tracking and optional polygon motion heuristics.
+
+
 
 
 
