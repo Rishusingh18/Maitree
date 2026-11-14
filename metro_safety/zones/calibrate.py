@@ -85,7 +85,7 @@ def calibrate_zones(
         if event == cv2.EVENT_LBUTTONDOWN:
             current_points.append([int(x), int(y)])
 
-    draw_win = "Draw Zones: Click vertices, 'c' to close zone, 'r' reset, 's' save, 'q' quit"
+    draw_win = "Draw Zones: Click vertices, 'c' close, 'u' undo, 'r' reset, 's' save, 'q' quit"
     cv2.namedWindow(draw_win, cv2.WINDOW_NORMAL)
     cv2.setMouseCallback(draw_win, mouse_callback)
 
@@ -103,13 +103,17 @@ def calibrate_zones(
     print(" 3. TRACK_BED (track area below platform)")
     print(" 4. DANGER_ZONE (combined edge + tracks)")
     print("\nKey commands:")
-    print(" - 'c': Complete & close current zone polygon (requires >= 3 points)")
-    print(" - 'r': Reset current zone points")
-    print(" - 's': Save polygons directly into config.yaml")
-    print(" - 'q': Quit without saving")
+    print(" - [Click]       : Add polygon vertex")
+    print(" - 'c'           : Complete & close current zone polygon (requires >= 3 points)")
+    print(" - 'u' / Backspace: UNDO (removes last clicked point, OR re-opens previously closed zone)")
+    print(" - 'r'           : Reset vertices of the CURRENT zone")
+    print(" - 'R' (Shift+R) : RESET ALL zones from scratch (keeps captured frame)")
+    print(" - 's'           : Save polygons directly into config.yaml")
+    print(" - 'q'           : Quit without saving")
 
     while True:
         display = reference_frame.copy()
+        h, w = display.shape[:2]
 
         # Draw already saved zones
         for name, pts in saved_zones.items():
@@ -122,7 +126,12 @@ def calibrate_zones(
         # Draw active zone points
         curr_name = zones_to_define[current_zone_idx] if current_zone_idx < len(zones_to_define) else "ALL ZONES DEFINED! Press 's' to save"
         curr_col = colors.get(curr_name, (0, 255, 255))
-        cv2.putText(display, f"ACTIVE: {curr_name.upper()}", (15, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, curr_col, 2)
+        cv2.putText(display, f"ACTIVE: {curr_name.upper()} ({len(current_points)} pts)", (15, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, curr_col, 2)
+
+        # Bottom help banner
+        help_bar = "[c] Close  [u] Undo Point/Zone  [r] Reset Zone  [Shift+R] Reset All  [s] Save  [q] Quit"
+        cv2.rectangle(display, (0, h - 35), (w, h), (30, 30, 30), -1)
+        cv2.putText(display, help_bar, (15, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (220, 220, 220), 1)
 
         for pt in current_points:
             cv2.circle(display, tuple(pt), 5, (0, 0, 255), -1)
@@ -141,9 +150,26 @@ def calibrate_zones(
                 current_points = []
                 if current_zone_idx >= len(zones_to_define):
                     print("\nAll 4 zones defined! Press 's' to save to config.yaml.")
+        elif key == ord('u') or key == ord('z') or key == 8:  # 8 is Backspace
+            if len(current_points) > 0:
+                removed = current_points.pop()
+                print(f"<- Removed last vertex: {removed} ({len(current_points)} vertices remaining)")
+            elif current_zone_idx > 0:
+                current_zone_idx -= 1
+                undone_zone = zones_to_define[current_zone_idx]
+                if undone_zone in saved_zones:
+                    current_points = saved_zones.pop(undone_zone)
+                print(f"<- Undid closed zone '{undone_zone.upper()}'. Polygon re-opened ({len(current_points)} vertices). Press 'u' to drop points or 'r' to clear.")
+            else:
+                print("Nothing to undo.")
         elif key == ord('r'):
             current_points = []
-            print("Reset current polygon points.")
+            print("Reset vertices for current polygon.")
+        elif key == ord('R'):
+            saved_zones.clear()
+            current_points = []
+            current_zone_idx = 0
+            print("RESET ALL: Cleared all zones. Restarting from Zone 1 (PLATFORM).")
         elif key == ord('s'):
             if len(saved_zones) < 3:
                 print("[Warning] Please define at least platform, yellow_band, and track_bed before saving.")

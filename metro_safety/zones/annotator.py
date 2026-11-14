@@ -58,8 +58,24 @@ def run_annotator(image_path: str, output_yaml: str):
                 print(f"Saved zone: {zones_to_define[current_zone_idx]} with {len(current_points)} points.")
                 current_zone_idx += 1
                 current_points = []
+        elif key == ord('u') or key == ord('z') or key == 8:  # 8 is Backspace
+            if len(current_points) > 0:
+                removed = current_points.pop()
+                print(f"<- Removed last vertex: {removed}")
+            elif current_zone_idx > 0:
+                current_zone_idx -= 1
+                undone_zone = zones_to_define[current_zone_idx]
+                if undone_zone in saved_zones:
+                    current_points = saved_zones.pop(undone_zone)
+                print(f"<- Undid closed zone '{undone_zone}'. Re-opened for editing.")
         elif key == ord('r'):
             current_points = []
+            print("Reset vertices for current polygon.")
+        elif key == ord('R'):
+            saved_zones.clear()
+            current_points = []
+            current_zone_idx = 0
+            print("Reset all zones.")
         elif key == ord('s'):
             out_path = Path(output_yaml)
             out_path.parent.mkdir(parents=True, exist_ok=True)

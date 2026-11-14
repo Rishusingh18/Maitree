@@ -126,9 +126,13 @@ python -m metro_safety.zones.calibrate --source http://192.168.1.32:8080/video
 2. Press `SPACE` to capture a still reference frame from your phone camera.
 3. For each zone (`platform` -> `yellow_band` -> `track_bed` -> `danger_zone`):
    - Left-click points in clockwise/counter-clockwise order around the zone perimeter.
-   - Press `c` to complete and close the polygon.
-   - Press `r` to clear points if you make a mistake.
-4. Press `s` to save the new polygon coordinates directly into `config.yaml`. The system will now use these exact physical boundaries.
+   - Press **`c`** to complete and close the polygon.
+   - **Need to redo or fix points?**
+     - Press **`u`** or **`Backspace`**: Undo the last clicked point. If the zone is already closed, pressing `u` re-opens the previous zone so you can adjust or redraw it!
+     - Press **`r`**: Clears all points for the current zone so you can redraw it.
+     - Press **`Shift + R`**: Clears all zones and restarts from Zone 1 (`platform`) on the same captured frame.
+     - Press **`q`**: Aborts and quits without saving (preserves previous `config.yaml`).
+4. Press **`s`** to save the new polygon coordinates directly into `config.yaml`.
 
 ---
 
