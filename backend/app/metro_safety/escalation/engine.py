@@ -8,7 +8,7 @@ With auto-escalation timer and audit trail.
 """
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any, Union
 import time
 
 from metro_safety.events.models import SafetyEvent, EventType, SeverityLevel
@@ -31,6 +31,7 @@ class EscalationDecision:
     latency_ms: float
     timestamp: float
     event: SafetyEvent
+    snapshot: Optional[Any] = None
 
 class EscalationEngine:
     """Evaluates safety events against severity rules and hardware actuators."""
@@ -63,13 +64,34 @@ class EscalationEngine:
             import logging
             logging.getLogger("EscalationEngine").error(f"Notifier send_alert failed: {e}")
 
-    def evaluate(self, event: SafetyEvent, current_time: Optional[float] = None) -> EscalationDecision:
+    def evaluate(
+        self,
+        event: SafetyEvent,
+        train_state: Optional[Union[str, Any]] = None,
+        current_time: Optional[float] = None,
+        snapshot: Optional[Any] = None,
+        **kwargs
+    ) -> EscalationDecision:
         """Process event, determine severity ladder action, trigger adapters, and measure latency."""
-        t_now = current_time if current_time is not None else time.time()
+        # Handle positional swap where 2nd arg was current_time (e.g., evaluate(ev, 1700000.0))
+        if isinstance(train_state, (int, float)) and current_time is None:
+            current_time = float(train_state)
+            train_state = None
+
+        t_now = float(current_time) if current_time is not None else time.time()
         start_time = time.perf_counter()
 
         ev_type = event.event_type
-        train_state = event.train_state
+
+        # Resolve train state string
+        if train_state is not None:
+            effective_train_state = train_state.value.upper() if hasattr(train_state, "value") else str(train_state).upper()
+        elif event.train_state is not None:
+            effective_train_state = event.train_state.value.upper() if hasattr(event.train_state, "value") else str(event.train_state).upper()
+        else:
+            effective_train_state = "ABSENT"
+
+        train_state = effective_train_state
 
         severity = SeverityLevel.NORMAL
         action_msg = ""
@@ -152,7 +174,8 @@ class EscalationEngine:
             ets_triggered=ets_active,
             latency_ms=round(latency_ms, 2),
             timestamp=t_now,
-            event=event
+            event=event,
+            snapshot=snapshot
         )
         self.decision_log.append(decision)
         return decision
