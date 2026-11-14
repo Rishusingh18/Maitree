@@ -88,7 +88,12 @@ class LiveHub:
         self.active_alert: Optional[Dict[str, Any]] = None
 
         # References to hardware components
-        self.buzzer = None
+        try:
+            from metro_safety.escalation.buzzer import HardwareBuzzer
+            self.buzzer = HardwareBuzzer(audio_enabled=True)
+        except Exception as _b_init_err:
+            logger.warning(f"Could not initialize HardwareBuzzer in LiveHub: {_b_init_err}")
+            self.buzzer = None
         self.train_state_provider = None
 
         try:

@@ -6,7 +6,13 @@ import sys
 import time
 import threading
 import logging
+import io
+import math
+import struct
+import wave
 from typing import Optional, Dict, Any
+
+from metro_safety.escalation.adapters import BasePlatformBuzzer
 
 logger = logging.getLogger("metro_safety.escalation.buzzer")
 
@@ -18,9 +24,10 @@ except ImportError:
     HAS_WINSOUND = False
 
 
-class HardwareBuzzer:
+class HardwareBuzzer(BasePlatformBuzzer):
     """Manages audible buzzer alerts with severity-specific sound patterns,
     non-blocking daemon audio playback, automatic clear-timeout, and operator acknowledge.
+    Implements BasePlatformBuzzer for seamless integration with EscalationEngine.
     """
 
     PATTERNS = {
@@ -29,6 +36,28 @@ class HardwareBuzzer:
         "L2": 2,
         "L3": 3,
     }
+
+    @staticmethod
+    def _generate_wav(frequency: int, duration_ms: int) -> bytes:
+        sample_rate = 22050
+        num_samples = int(sample_rate * (duration_ms / 1000.0))
+        buf = io.BytesIO()
+        with wave.open(buf, 'wb') as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(sample_rate)
+            fade_len = min(int(sample_rate * 0.005), num_samples // 4) if num_samples > 10 else 1
+            data = bytearray()
+            for i in range(num_samples):
+                gain = 1.0
+                if i < fade_len:
+                    gain = i / float(fade_len)
+                elif i > num_samples - fade_len:
+                    gain = (num_samples - i) / float(fade_len)
+                sample = int(32767 * 0.55 * gain * math.sin(2.0 * math.pi * frequency * i / sample_rate))
+                data.extend(struct.pack('<h', sample))
+            wav.writeframes(data)
+        return buf.getvalue()
 
     def __init__(
         self,
@@ -71,17 +100,33 @@ class HardwareBuzzer:
         self._thread.start()
 
     def _default_beep(self, frequency: int, duration_ms: int):
-        """Emit beep using winsound on Windows or terminal bell fallback."""
+        """Emit beep using Windows audio, winsound.Beep, or terminal bell fallback."""
         if not self.audio_enabled or self._muted:
             return
         if HAS_WINSOUND:
+            # 1. Synthesized audio tone played via standard audio output (works on all modern PCs)
             try:
-                # Clamp frequency to valid range (37 through 32767)
+                wav_bytes = self._generate_wav(frequency, duration_ms)
+                winsound.PlaySound(wav_bytes, winsound.SND_MEMORY)
+                return
+            except Exception as e:
+                logger.debug(f"winsound.PlaySound error: {e}")
+
+            # 2. Native winsound.Beep fallback (legacy motherboard speaker)
+            try:
                 freq = max(37, min(32767, int(frequency)))
                 dur = max(20, int(duration_ms))
                 winsound.Beep(freq, dur)
+                return
             except Exception as e:
                 logger.debug(f"winsound.Beep error: {e}")
+
+            # 3. System audio exclamation fallback
+            try:
+                winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+                return
+            except Exception:
+                pass
         else:
             try:
                 sys.stdout.write('\a')
@@ -89,6 +134,28 @@ class HardwareBuzzer:
                 time.sleep(duration_ms / 1000.0)
             except Exception:
                 pass
+
+    def activate(self, platform_id: str = "", pattern: str = "PULSED"):
+        """Implement BasePlatformBuzzer.activate() for EscalationEngine integration."""
+        pat = str(pattern).upper().strip()
+        if pat in ["CONTINUOUS_HIGH", "L3"]:
+            self.trigger("L3")
+        elif pat in ["PULSED_FAST", "L2"]:
+            self.trigger("L2")
+        elif pat in ["PULSED", "L1"]:
+            self.trigger("L1")
+        else:
+            self.trigger("L1")
+
+    def deactivate(self, platform_id: str = ""):
+        """Implement BasePlatformBuzzer.deactivate()."""
+        with self._lock:
+            self._current_pattern = "OFF"
+
+    def is_active(self, platform_id: str = "") -> bool:
+        """Implement BasePlatformBuzzer.is_active()."""
+        with self._lock:
+            return self._current_pattern != "OFF"
 
     def trigger(self, severity: str):
         """Trigger or escalate the buzzer.

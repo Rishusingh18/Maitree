@@ -80,9 +80,38 @@ def run_pipeline(
         min_persistence=cfg["gesture"]["min_persistence_frames"],
         use_macro_fallback=cfg["gesture"]["use_macro_fallback"]
     )
+    # Connect to shared LiveHub so run.py also feeds the dashboard
+    from metro_safety.demo.hub import get_global_hub
+    hub = get_global_hub()
+    hub.cctv_id = cfg["system"]["camera_id"]
+    hub.station_id = cfg["system"]["station_id"]
+    hub.platform_id = cfg["system"]["platform_id"]
+
+    # Connect or initialize real hardware PC buzzer
+    buzzer_cfg = cfg.get("buzzer", {})
+    buzzer = getattr(hub, "buzzer", None)
+    if buzzer is None:
+        try:
+            from metro_safety.escalation.buzzer import HardwareBuzzer
+            buzzer = HardwareBuzzer(
+                audio_enabled=buzzer_cfg.get("audio_enabled", True),
+                clear_timeout_sec=buzzer_cfg.get("clear_timeout_sec", 4.0),
+                l1_freq=buzzer_cfg.get("l1_frequency", 800),
+                l1_dur_ms=buzzer_cfg.get("l1_duration_ms", 150),
+                l2_freq=buzzer_cfg.get("l2_frequency", 1200),
+                l2_beep_ms=buzzer_cfg.get("l2_beep_ms", 200),
+                l2_pause_ms=buzzer_cfg.get("l2_pause_ms", 100),
+                l3_low_freq=buzzer_cfg.get("l3_low_freq", 1800),
+                l3_high_freq=buzzer_cfg.get("l3_high_freq", 2200)
+            )
+            hub.set_hardware_components(buzzer=buzzer)
+        except Exception as _b_err:
+            buzzer = None
+
     escalation = EscalationEngine(
         station_id=cfg["system"]["station_id"],
-        platform_id=cfg["system"]["platform_id"]
+        platform_id=cfg["system"]["platform_id"],
+        buzzer=buzzer
     )
     train_state = TrainState(train_state_val)
 
@@ -95,13 +124,6 @@ def run_pipeline(
         loop_video=loop_video
     )
     print(f"[Pipeline] Active source: {frame_source.source_name}")
-
-    # Connect to shared LiveHub so run.py also feeds the dashboard
-    from metro_safety.demo.hub import get_global_hub
-    hub = get_global_hub()
-    hub.cctv_id = cfg["system"]["camera_id"]
-    hub.station_id = cfg["system"]["station_id"]
-    hub.platform_id = cfg["system"]["platform_id"]
 
     # Initialize YOLO pose model behind abstract interface
     pose_detector = None
@@ -201,10 +223,19 @@ def run_pipeline(
 
             # Per-frame escalation lifecycle: clear confirmed resolved tracks (present in safe platform with no active hazards)
             active_hazard_tracks = {ev.track_id for ev in all_evs if hasattr(ev, 'track_id')}
+            has_intrusion = False
             for det in tracked_dets:
+                zone = zm.get_zone_for_point(det.foot_anchor)
+                if zone in ["yellow_band", "track_bed", "danger_zone"]:
+                    has_intrusion = True
                 if det.track_id is not None and det.track_id not in active_hazard_tracks:
-                    if zm.get_zone_for_point(det.foot_anchor) == "platform":
+                    if zone == "platform":
                         escalation.clear_track(det.track_id)
+            if buzzer:
+                try:
+                    buzzer.update_clear_status(has_intrusion)
+                except Exception:
+                    pass
 
             # 4. Closed-Loop Escalation: Select displayed decision by explicit severity priority (L3 > L2 > L1 > DISTRESS > NORMAL)
             SEVERITY_PRIORITY = {
@@ -363,6 +394,11 @@ def run_pipeline(
 
     finally:
         frame_source.release()
+        if buzzer:
+            try:
+                buzzer.deactivate()
+            except Exception:
+                pass
         if writer:
             writer.release()
         if show_window:
