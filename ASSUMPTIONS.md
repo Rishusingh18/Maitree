@@ -36,3 +36,10 @@ This document logs all engineering assumptions made during the design, developme
 - **ETS Safety Interlock**: An ETS action requires explicit human confirmation within a configurable timeout window (default 5 seconds) before autonomous hard-trip, unless configured in full-auto mode.
 - **Privacy**: No facial recognition, facial landmarking, biometric profiling, or persistent cross-session tracking. Track IDs are ephemeral integer tokens reset per video session.
 
+## 6. Live Phone Pipeline & Control Room Dashboard Integration
+- **Camera Stream**: Phone camera streams over local Wi-Fi at `http://192.168.1.8:8080/video`. Threaded reader drops stale frames (buffer size 1) to eliminate video lag.
+- **Hardware Buzzer**: Real audible alarm on laptop uses Windows `winsound.Beep` in an asynchronous background daemon thread so computer vision inference is never blocked. Non-Windows fallbacks emit terminal bells or silent stubs.
+- **Buzzer Patterns & Clear Logic**: L1 emits a short single pulse (800Hz), L2 emits a repeating pulse (1200Hz), and L3 emits an alternating high-intensity siren (1800Hz / 2200Hz). Buzzer continues until either an operator clicks "Acknowledge" or all tracks remain clear of the danger zone for 4.0 continuous seconds.
+- **Overlooker Notifications**: Windows desktop notifications are dispatched via PowerShell WinRT toast API. Outbound webhooks (ntfy.sh / Telegram) are optional and disabled by default for 100% offline security. A 10-second per-event-type cooldown prevents alert storms.
+- **Telemetry Transparency**: Synthetic benchmark accuracy is explicitly labeled as "synthetic benchmark" on the dashboard, distinguishing it from live operational telemetry (live FPS, live latency).
+
