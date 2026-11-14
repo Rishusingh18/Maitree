@@ -1,0 +1,95 @@
+/* ===== Refinement layer: warm paper + signal ink. Loaded last; no markup or JS changes. ===== */
+:root{
+  --background:#EEEBE3; --foreground:#1E2227; --surface:#FAF8F3; --surface-secondary:#F2EFE7;
+  --surface-tertiary:#E6E2D7; --border:#D6D1C4; --border-subtle:#E4E0D5; --muted-foreground:#6B685F;
+  --primary:#27415C; --primary-hover:#1C3149; --signal:#D4A017; --danger-ink:#A63D36;
+  --sidebar-bg:#1D2228; --sidebar-border:#1D2228; --header-bg:#FAF8F3; --header-border:#CFC9BA;
+}
+html.dark{
+  --background:#14171B; --foreground:#E7E4DB; --surface:#1B1F24; --surface-secondary:#21262C;
+  --surface-tertiary:#2A3037; --border:#30363D; --border-subtle:#262B31; --muted-foreground:#9A978D;
+  --primary:#A9C0D8; --primary-hover:#C2D3E4; --signal:#E3B52F; --danger-ink:#E58B80;
+  --sidebar-bg:#101317; --sidebar-border:#101317; --header-bg:#1B1F24; --header-border:#30363D;
+}
+body,button,input,select,textarea{font-family:'IBM Plex Sans','Segoe UI',system-ui,sans-serif !important}
+.font-mono,kbd,.tabular-nums,td:first-child,code{font-family:'IBM Plex Mono',ui-monospace,Consolas,monospace !important}
+.tabular-nums,td,th{font-variant-numeric:tabular-nums}
+td,.font-mono,h1,h2,h3,p{-webkit-user-select:text;user-select:text}
+body{font-size:13px;letter-spacing:0}
+
+/* shape: square, flat, hairlines */
+[class*="rounded"]:not(.rounded-full){border-radius:2px !important}
+[class*="shadow"]{box-shadow:none !important}
+[class*="shadow-xl"],[class*="shadow-2xl"]{box-shadow:0 6px 24px rgb(0 0 0/.16) !important}
+
+/* header */
+header{border-bottom:1px solid var(--header-border) !important;box-shadow:none !important;
+  background:var(--header-bg) !important}
+header > div:first-child > div:first-child{background:#1D2228 !important;color:var(--signal) !important;
+  border-radius:2px !important;box-shadow:inset 0 -3px 0 var(--signal)}
+header > div:first-child .font-bold{font-weight:600 !important;letter-spacing:.01em}
+header > div:last-child > button:last-child{background:var(--danger-ink) !important;border-color:var(--danger-ink) !important;
+  border-radius:2px !important;letter-spacing:.02em}
+header > div:last-child > button:last-child:hover{filter:brightness(.92)}
+html.dark header > div:last-child > button:last-child{color:#14171B !important}
+#theme-toggle-btn,header button{border-radius:2px !important}
+header .rounded-full.w-8{border-radius:2px !important;background:var(--surface-tertiary) !important}
+
+/* sidebar: dark ink in both themes, local colour scope */
+#main-sidebar{--foreground:#ECE9E0;--muted-foreground:#98958B;--primary:#F0C84B;--surface-secondary:#262C33;--border:#2B3138;
+  border-right:0 !important}
+#main-sidebar .nav-btn{border-radius:0 !important;color:#B4B1A6 !important;font-size:12.5px !important}
+#main-sidebar .nav-btn:hover{background:#262C33 !important;color:#fff !important}
+#main-sidebar .nav-btn.active{background:#262C33 !important;color:#fff !important;box-shadow:inset 3px 0 0 var(--signal) !important}
+#main-sidebar .nav-btn svg{opacity:.85}
+#main-sidebar nav > div > div:first-child{color:#78766D !important;font-size:10px !important;text-transform:uppercase !important;letter-spacing:.12em !important}
+#main-sidebar .nav-btn[data-tab="emergency"]{color:#E9A096 !important}
+#main-sidebar [class*="bg-red"]{background:transparent !important}
+
+/* page header */
+main{background:var(--background) !important}
+.tab-content > div:first-child h1{font-size:22px !important;font-weight:600 !important;letter-spacing:-.01em !important}
+.tab-content > div:first-child p{color:var(--muted-foreground)}
+
+/* segmented controls -> flat tab strip */
+.inline-flex.p-0\.5{border-radius:0 !important;background:transparent !important;padding:0 !important;border:0 !important;
+  box-shadow:inset 0 -1px 0 var(--border) !important}
+.inline-flex.p-0\.5 > button{border-radius:0 !important;padding:6px 12px !important;color:var(--muted-foreground);
+  border-bottom:2px solid transparent;background:transparent !important}
+.inline-flex.p-0\.5 > button[class*="bg-[var(--surface)]"]{color:var(--foreground) !important;font-weight:600;
+  border-bottom-color:var(--signal)}
+
+/* KPI strip */
+#view-overview > .grid.grid-cols-1.sm\:grid-cols-2.lg\:grid-cols-4{border-block:1px solid var(--border) !important;
+  border-top:2px solid var(--foreground) !important}
+#view-overview > .grid.grid-cols-1.sm\:grid-cols-2.lg\:grid-cols-4 > div > div:nth-child(2){font-weight:500 !important;
+  font-family:'IBM Plex Mono',monospace !important;letter-spacing:-.02em !important;font-size:26px !important}
+#view-overview > .grid.grid-cols-1.sm\:grid-cols-2.lg\:grid-cols-4 > div > div:first-child{
+  font-size:11px !important;color:var(--muted-foreground) !important;font-weight:500 !important}
+
+/* tables: ids in ink, tags as stamped squares, dots as block signals */
+table th{font-weight:500 !important;letter-spacing:.06em !important;color:var(--muted-foreground) !important;
+  background:var(--surface-secondary) !important;border-bottom:1px solid var(--border)}
+table td{border-bottom:1px solid var(--border-subtle)}
+table tbody tr:hover{background:var(--surface-secondary) !important}
+.text-blue-600,html.dark .dark\:text-blue-400{color:var(--primary) !important}
+td.text-blue-600,td[class*="text-blue"],td .text-blue-600{color:var(--primary) !important;font-weight:500 !important}
+span.rounded[class*="text-[11px]"],span.rounded[class*="text-[10px]"]{background:transparent !important;
+  border:1px solid currentColor;font-family:'IBM Plex Mono',monospace !important;font-size:10px !important;
+  letter-spacing:.06em;padding:1px 6px !important;font-weight:500 !important}
+.rounded-full[class*="w-1"],.rounded-full[class*="w-2"]{border-radius:0 !important}
+td button{border-radius:2px !important}
+
+/* cards: top rule instead of boxed + rounded */
+.border.border-\[var\(--border\)\]{border-color:var(--border)}
+[class~="bg-red-50"]{background:color-mix(in srgb,var(--danger-ink) 9%,var(--surface)) !important;border-color:color-mix(in srgb,var(--danger-ink) 35%,var(--border)) !important}
+html.dark [class*="dark:bg-red-950"]{background:color-mix(in srgb,var(--danger-ink) 14%,var(--surface)) !important}
+.text-red-600,.text-red-700{color:var(--danger-ink) !important}
+html.dark .dark\:text-red-400{color:var(--danger-ink) !important}
+.bg-red-600{background:var(--danger-ink) !important}
+
+/* inputs, focus */
+input,select,textarea{border-radius:2px !important}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--signal) !important;outline-offset:2px}
+::selection{background:var(--signal);color:#1E2227}
+@media (prefers-reduced-motion:reduce){*{animation:none !important;transition:none !important}}
