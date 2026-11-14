@@ -26,7 +26,7 @@ The complete AI/ML software suite for the **AI Metro Platform Safety System** ha
 11. **`metro_safety/tools/`**:
    - `record_clip.py`: Capture raw clips from live CCTV / phone streams.
    - `replay.py`: Offline replay with kinematic HUD (vertical velocity, torso tilt, zone) for tuning jump and fall thresholds.
-12. **`tests/`**: Comprehensive pytest suite (42/42 passing tests) covering buzzer logic, overlooker alerts, dashboard API, MJPEG video streaming, fallback auto-reconnect, event deduplication, gestures, escalation type-checking, live robustness/error isolation, zones, and end-to-end integration with live replay of `demo_jump.mp4`.
+12. **`tests/`**: Comprehensive pytest suite (52/52 passing tests) covering buzzer logic, overlooker alerts, dashboard API, MJPEG video streaming, fallback auto-reconnect, event deduplication, gestures, escalation type-checking, live robustness/error isolation, zones, polygon validation, camera motion gating, real browser Playwright verification, and end-to-end integration with live replay of `demo_jump.mp4`.
 
 ---
 
@@ -36,11 +36,15 @@ The complete AI/ML software suite for the **AI Metro Platform Safety System** ha
 - **Rule-Based Classifier Accuracy**: **94.4%** (Target Met)
 - **Confidence Calibration**: Strictly calibrated and capped at **0.99** (never reports 100%)
 - **False-Alert Gating**: Minimum duration ($\ge 4$ frames) and displacement ($\ge 10$ px fall, $\ge 8$ px jump)
+- **Camera-Motion Gate**: Sparse LK optical flow on background features + blur detector capping falls/jumps at Level 2 with `"CAMERA MOVING: needs operator review"` (0 false L3 alerts during camera movement)
+- **Strict Zone Semantics**: Persons outside platform/track zones or in `"ignore"` areas (e.g. seating) are discarded
+- **Polygon Validation**: Refuses self-intersecting (bowtie) polygons on startup; centroid-sorting auto-repair hotkey `'f'`; backup saved to `config.yaml.bak`
+- **Dashboard Video Verification**: Verified with Playwright Chromium (`naturalWidth > 0`, active pixel changes over 3s, matching producer/server PID, 60 JPEG parts / 5s, mean pixel intensity = 35.58 > 5.0)
 - **Event Deduplication**: 5.0-second cooldown per `(track_id, event_type)` preventing duplicate alert storms
 - **Fallback Transparency**: Prominent amber HUD and web banner when phone stream drops, with live background reconnection probe and auto-switchback; synthetic events marked `[DEMO]`
-- **Live Pipeline Speed**: **12.0 - 18.0 FPS** on CPU (`imgsz=320`), >400 FPS (Kinematic pipeline alone)
+- **Live Pipeline Speed**: **25+ FPS** display & capture loop, **15.0 - 20.0 FPS** inference on CPU (`AsyncInferenceWorker`, `imgsz=320`), >400 FPS (Kinematic pipeline alone)
 - **Mean Alert Latency**: **0.53 ms** (95th percentile: **0.98 ms**)
-- **Test Suite Results**: **42 passed, 0 failed** (`pytest tests -v`)
+- **Test Suite Results**: **52 passed, 0 failed** (`pytest tests -v`)
 
 ---
 
@@ -57,7 +61,7 @@ All commands can be executed directly using the isolated virtual environment:
 # 3. Replay Saved Clip with Kinematic HUD
 .\.venv\Scripts\python.exe -m metro_safety.tools.replay --video demo_clips/demo_jump.mp4
 
-# 4. Run Pytest Suite (All 42 Tests)
+# 4. Run Pytest Suite (All 52 Tests)
 $env:PYTHONPATH="."; .\.venv\Scripts\pytest.exe tests -v
 ```
 

@@ -246,6 +246,14 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
     <div class="grid">
         <!-- Left: Live Video & Event Log -->
         <div>
+            <!-- Camera Moving Warning Banner -->
+            <div id="camera-motion-banner" style="display: none; background: linear-gradient(90deg, #7C2D12, #C2410C); color: #FFF; padding: 12px 16px; border-radius: 6px; margin-bottom: 12px; font-weight: 700; font-size: 13px; border: 1px solid #EA580C; box-shadow: 0 2px 4px rgba(0,0,0,0.3); animation: pulse-border 1.5s infinite;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span>📷 <strong>CAMERA MOVING: needs operator review</strong> (alerts capped at L2)</span>
+                    <span style="font-size: 11px; background: rgba(0,0,0,0.3); padding: 3px 8px; border-radius: 4px;" id="camera-motion-reason">Optical flow shake</span>
+                </div>
+            </div>
+
             <!-- Prominent Fallback Warning Banner -->
             <div id="fallback-banner" style="display: none; background: linear-gradient(90deg, #92400E, #B45309); color: #FEF3C7; padding: 12px 16px; border-radius: 6px; margin-bottom: 14px; font-weight: 600; font-size: 13px; border: 1px solid #F59E0B; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -260,8 +268,14 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                     <span>Live CCTV Video Feed & Real-time AI Overlays</span>
                     <span style="font-size: 12px; color: var(--text-muted);">Drop Stale: ON | Low-Latency MJPEG</span>
                 </div>
-                <div class="video-container">
-                    <img id="live-video" src="/video_feed" alt="CCTV Stream" onerror="reconnectVideo(this);">
+                <div class="video-container" style="position: relative;">
+                    <img id="live-video" src="/video_feed" alt="CCTV Stream" onload="handleVideoLoad();" onerror="handleVideoError(this);">
+                    <!-- Visible Stream Error Overlay -->
+                    <div id="video-error-overlay" style="display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(15, 23, 42, 0.92); color: #EF4444; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 20px; z-index: 25;">
+                        <div style="font-size: 32px; margin-bottom: 8px;">⚠️</div>
+                        <div style="font-size: 16px; font-weight: 700; letter-spacing: 0.5px;">STREAM ERROR / DISCONNECTED</div>
+                        <div style="font-size: 12px; color: #94A3B8; margin-top: 6px;" id="video-error-msg">Waiting for camera pipeline reconnect. Retrying stream...</div>
+                    </div>
                     <div class="video-overlay-badge">
                         <span class="badge badge-l3" id="ets-badge">ETS READY</span>
                     </div>
@@ -374,11 +388,18 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
     <script>
         let isMuted = false;
 
-        function reconnectVideo(img) {
-            console.warn("MJPEG feed disconnected. Reconnecting in 1.2s...");
+        function handleVideoError(img) {
+            console.warn("MJPEG feed disconnected. Displaying visible stream error and retrying in 1.2s...");
+            const overlay = document.getElementById('video-error-overlay');
+            if (overlay) overlay.style.display = 'flex';
             setTimeout(() => {
                 img.src = '/video_feed?t=' + Date.now();
             }, 1200);
+        }
+
+        function handleVideoLoad() {
+            const overlay = document.getElementById('video-error-overlay');
+            if (overlay) overlay.style.display = 'none';
         }
 
         function updateTelemetry() {
@@ -390,6 +411,15 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                     document.getElementById('tel-accuracy').textContent = data.synthetic_accuracy;
                     document.getElementById('tel-train').textContent = data.train_state;
                     document.getElementById('train-state-badge').textContent = 'TRAIN: ' + data.train_state;
+
+                    // Camera Motion Banner
+                    const cmBanner = document.getElementById('camera-motion-banner');
+                    if (data.camera_motion) {
+                        cmBanner.style.display = 'block';
+                        document.getElementById('camera-motion-reason').textContent = data.camera_motion_reason || 'Motion detected';
+                    } else {
+                        cmBanner.style.display = 'none';
+                    }
 
                     // Train state color
                     const tBadge = document.getElementById('train-state-badge');

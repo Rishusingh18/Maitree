@@ -54,14 +54,14 @@ def test_replay_jump_triggers_api_and_buzzer(tmp_path):
 
     audit_log = tmp_path / "replay_test_audit.json"
 
-    # Replay first 30 frames (deliberate jump occurs at frames 20-23)
+    # Replay first 60 frames (deliberate jump motion detected and confirmed)
     replay_clip(
         video_path=video_clip,
         show_window=False,
         output_log=str(audit_log),
         hub=hub,
         buzzer=buzzer,
-        max_frames=30
+        max_frames=60
     )
 
     # 1. Verify buzzer state

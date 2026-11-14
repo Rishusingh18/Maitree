@@ -1,9 +1,11 @@
 """Interactive tool to calibrate and draw platform zones:
-- Can capture directly from live camera stream (HTTP IP Webcam, RTSP, Webcam index, or video file).
-- Displays live preview and lets user press SPACE to capture reference frame for zone calibration.
-- User clicks points to outline 'platform', 'yellow_band', 'track_bed', and 'danger_zone'.
-- Saves polygons directly into config.yaml (preserving remaining config sections).
+- Captures from live camera stream or video file.
+- Validates polygons (detects bowtie self-intersections, < 3 points, tiny areas).
+- Hotkey 'f' provides automatic repair by sorting points angularly around centroid.
+- Supports 'ignore' zone type where detections are discarded.
+- Keeps a backup of config.yaml before saving changes.
 """
+import shutil
 import argparse
 from pathlib import Path
 import yaml
@@ -13,6 +15,12 @@ import time
 
 from metro_safety.perception.frame_source import create_frame_source
 from metro_safety.config import load_config, DEFAULT_CONFIG_PATH
+from metro_safety.zones.geometry import (
+    validate_polygon,
+    reorder_polygon_around_centroid,
+    is_polygon_self_intersecting
+)
+
 
 def calibrate_zones(
     source_uri: str = "http://192.168.1.32:8080/video",
@@ -74,18 +82,20 @@ def calibrate_zones(
     cv2.imwrite(str(ref_path), reference_frame)
     print(f"Reference frame saved to: {ref_path}")
 
-    # Step 2: Polygon Drawing
-    zones_to_define = ["platform", "yellow_band", "track_bed", "danger_zone"]
+    # Step 2: Polygon Drawing with Validation
+    zones_to_define = ["platform", "yellow_band", "track_bed", "danger_zone", "ignore"]
     current_zone_idx = 0
     saved_zones = {}
     current_points = []
+    status_bar_msg = "[c] Close  [f] Auto-Fix Bowtie  [u] Undo  [r] Reset Zone  [s] Save  [q] Quit"
+    status_color = (220, 220, 220)
 
     def mouse_callback(event, x, y, flags, param):
         nonlocal current_points
         if event == cv2.EVENT_LBUTTONDOWN:
             current_points.append([int(x), int(y)])
 
-    draw_win = "Draw Zones: Click vertices, 'c' close, 'u' undo, 'r' reset, 's' save, 'q' quit"
+    draw_win = "Draw Zones: [c] close | [f] auto-fix | [u] undo | [s] save | [q] quit"
     cv2.namedWindow(draw_win, cv2.WINDOW_NORMAL)
     cv2.setMouseCallback(draw_win, mouse_callback)
 
@@ -93,23 +103,23 @@ def calibrate_zones(
         "platform": (0, 200, 0),
         "yellow_band": (0, 230, 255),
         "track_bed": (0, 0, 220),
-        "danger_zone": (0, 140, 255)
+        "danger_zone": (0, 140, 255),
+        "ignore": (160, 100, 160)
     }
 
-    print("\n--- Zone Annotation Mode ---")
+    print("\n--- Zone Annotation Mode with Validation ---")
     print("Click around each area in order:")
     print(" 1. PLATFORM (safe waiting area)")
     print(" 2. YELLOW_BAND (safety boundary line/tactile tiles)")
     print(" 3. TRACK_BED (track area below platform)")
     print(" 4. DANGER_ZONE (combined edge + tracks)")
-    print("\nKey commands:")
-    print(" - [Click]       : Add polygon vertex")
-    print(" - 'c'           : Complete & close current zone polygon (requires >= 3 points)")
-    print(" - 'u' / Backspace: UNDO (removes last clicked point, OR re-opens previously closed zone)")
-    print(" - 'r'           : Reset vertices of the CURRENT zone")
-    print(" - 'R' (Shift+R) : RESET ALL zones from scratch (keeps captured frame)")
-    print(" - 's'           : Save polygons directly into config.yaml")
-    print(" - 'q'           : Quit without saving")
+    print(" 5. IGNORE (optional seating/vending area where detections are discarded)")
+    print("\nHotkeys:")
+    print(" - 'c'           : Validate & close current zone polygon (rejects bowties/<3 pts/tiny areas)")
+    print(" - 'f'           : Auto-fix self-intersecting polygon by reordering points around centroid")
+    print(" - 'u' / Backspace: Undo last vertex or reopen previously closed zone")
+    print(" - 's'           : Validate all zones and save to config.yaml (keeps config.yaml.bak)")
+    print(" - 'q'           : Quit\n")
 
     while True:
         display = reference_frame.copy()
@@ -126,58 +136,111 @@ def calibrate_zones(
         # Draw active zone points
         curr_name = zones_to_define[current_zone_idx] if current_zone_idx < len(zones_to_define) else "ALL ZONES DEFINED! Press 's' to save"
         curr_col = colors.get(curr_name, (0, 255, 255))
-        cv2.putText(display, f"ACTIVE: {curr_name.upper()} ({len(current_points)} pts)", (15, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, curr_col, 2)
+        cv2.putText(display, f"ACTIVE: {curr_name.upper()} ({len(current_points)} pts)",
+                    (15, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, curr_col, 2)
 
         # Bottom help banner
-        help_bar = "[c] Close  [u] Undo Point/Zone  [r] Reset Zone  [Shift+R] Reset All  [s] Save  [q] Quit"
         cv2.rectangle(display, (0, h - 35), (w, h), (30, 30, 30), -1)
-        cv2.putText(display, help_bar, (15, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (220, 220, 220), 1)
+        cv2.putText(display, status_bar_msg, (15, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.50, status_color, 1)
 
         for pt in current_points:
             cv2.circle(display, tuple(pt), 5, (0, 0, 255), -1)
         if len(current_points) > 1:
-            cv2.polylines(display, [np.array(current_points, dtype=np.int32)], isClosed=False, color=(255, 255, 0), thickness=2)
+            poly_col = (255, 255, 0)
+            if len(current_points) >= 3:
+                self_int, _ = is_polygon_self_intersecting(current_points)
+                if self_int:
+                    poly_col = (0, 0, 255)  # Red alert if bowtie!
+            cv2.polylines(display, [np.array(current_points, dtype=np.int32)], isClosed=False, color=poly_col, thickness=2)
 
         cv2.imshow(draw_win, display)
         key = cv2.waitKey(20) & 0xFF
 
-        if key == ord('c') and len(current_points) >= 3:
-            if current_zone_idx < len(zones_to_define):
-                z_name = zones_to_define[current_zone_idx]
+        if key == ord('c'):
+            if current_zone_idx >= len(zones_to_define):
+                continue
+            z_name = zones_to_define[current_zone_idx]
+            valid, err_msg = validate_polygon(current_points, name=z_name)
+            if not valid:
+                status_bar_msg = f"[REJECTED] {err_msg}! Press 'f' to auto-fix around centroid."
+                status_color = (0, 0, 255)
+                print(f"[Validation Failed] Zone '{z_name}': {err_msg}. Press 'f' to auto-fix.")
+            else:
                 saved_zones[z_name] = current_points
-                print(f"-> Completed polygon for: {z_name} ({len(current_points)} vertices)")
+                print(f"-> Accepted valid polygon for: {z_name} ({len(current_points)} vertices)")
                 current_zone_idx += 1
                 current_points = []
-                if current_zone_idx >= len(zones_to_define):
-                    print("\nAll 4 zones defined! Press 's' to save to config.yaml.")
+                status_bar_msg = f"Saved '{z_name}'. Next: {zones_to_define[current_zone_idx] if current_zone_idx < len(zones_to_define) else 'All Defined'}"
+                status_color = (0, 255, 0)
+
+        elif key == ord('f'):
+            # Automatic repair by sorting points around centroid
+            if len(current_points) >= 3:
+                fixed_pts = reorder_polygon_around_centroid(current_points)
+                valid, err_msg = validate_polygon(fixed_pts, name=curr_name)
+                current_points = [[int(p[0]), int(p[1])] for p in fixed_pts]
+                if valid:
+                    status_bar_msg = "[AUTO-FIX APPLIED] Reordered points around centroid. Press 'c' to accept."
+                    status_color = (0, 255, 0)
+                    print(f"[Auto-Fix] Successfully repaired bowtie polygon around centroid.")
+                else:
+                    status_bar_msg = f"[Auto-Fix Warning] {err_msg}"
+                    status_color = (0, 140, 255)
+
         elif key == ord('u') or key == ord('z') or key == 8:  # 8 is Backspace
             if len(current_points) > 0:
                 removed = current_points.pop()
-                print(f"<- Removed last vertex: {removed} ({len(current_points)} vertices remaining)")
+                status_bar_msg = f"Removed last vertex: {removed}"
+                status_color = (200, 200, 200)
             elif current_zone_idx > 0:
                 current_zone_idx -= 1
                 undone_zone = zones_to_define[current_zone_idx]
                 if undone_zone in saved_zones:
                     current_points = saved_zones.pop(undone_zone)
-                print(f"<- Undid closed zone '{undone_zone.upper()}'. Polygon re-opened ({len(current_points)} vertices). Press 'u' to drop points or 'r' to clear.")
-            else:
-                print("Nothing to undo.")
+                status_bar_msg = f"Re-opened zone '{undone_zone}'. Press 'u' to drop points or 'f' to repair."
+                status_color = (0, 255, 255)
+
         elif key == ord('r'):
             current_points = []
-            print("Reset vertices for current polygon.")
+            status_bar_msg = "Reset vertices for active polygon."
+            status_color = (255, 255, 0)
+
         elif key == ord('R'):
             saved_zones.clear()
             current_points = []
             current_zone_idx = 0
-            print("RESET ALL: Cleared all zones. Restarting from Zone 1 (PLATFORM).")
+            status_bar_msg = "Reset all zones."
+            status_color = (255, 255, 0)
+
         elif key == ord('s'):
             if len(saved_zones) < 3:
-                print("[Warning] Please define at least platform, yellow_band, and track_bed before saving.")
+                status_bar_msg = "Please define at least platform, yellow_band, and track_bed before saving."
+                status_color = (0, 0, 255)
                 continue
+
+            # Validate all zones before writing to config
+            all_valid = True
+            for zn, zpts in saved_zones.items():
+                v, m = validate_polygon(zpts, name=zn)
+                if not v:
+                    all_valid = False
+                    status_bar_msg = f"Cannot save: zone '{zn}' is invalid ({m})"
+                    status_color = (0, 0, 255)
+                    break
+
+            if not all_valid:
+                continue
+
+            # Backup old config
+            bak_file = cfg_file.with_suffix(".yaml.bak")
+            try:
+                shutil.copyfile(cfg_file, bak_file)
+                print(f"[Backup] Saved backup of old config to: {bak_file}")
+            except Exception as e:
+                print(f"[Backup Warning] Could not create backup: {e}")
 
             # Update config file
             cfg["zones"] = saved_zones
-            # Also update input resolution to match calibrated camera
             h, w = reference_frame.shape[:2]
             cfg["system"]["input_resolution"] = [int(w), int(h)]
             cfg["system"]["source"] = source_uri
@@ -185,9 +248,10 @@ def calibrate_zones(
             with open(cfg_file, "w", encoding="utf-8") as f:
                 yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
 
-            print(f"\n[SUCCESS] Calibrated zones successfully saved into: {cfg_file}")
+            print(f"\n[SUCCESS] Calibrated & validated zones successfully saved into: {cfg_file}")
             print(f"Resolution set to: {w}x{h}")
             break
+
         elif key == ord('q'):
             print("Exited without saving.")
             break
@@ -196,7 +260,7 @@ def calibrate_zones(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Live CCTV Zone Calibration Tool")
+    parser = argparse.ArgumentParser(description="Live CCTV Zone Calibration & Validation Tool")
     parser.add_argument("--source", type=str, default="http://192.168.1.32:8080/video",
                         help="Live camera stream URL, webcam index (0), or video file")
     parser.add_argument("--config", type=str, default=str(DEFAULT_CONFIG_PATH),
@@ -206,4 +270,3 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     calibrate_zones(args.source, args.config, args.capture_path)
-

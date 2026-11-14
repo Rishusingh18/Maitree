@@ -160,6 +160,13 @@ class LearnedEventClassifier:
         for det in tracked_detections:
             if det.track_id is None:
                 continue
+
+            # Strict zone semantics: ignore detections outside monitored zones or in 'ignore' zone
+            foot = det.foot_anchor
+            zone = zone_manager.get_zone_for_point(foot)
+            if zone in ["outside", "ignore"]:
+                continue
+
             tid = det.track_id
             active_ids.add(tid)
 

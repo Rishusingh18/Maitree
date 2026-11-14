@@ -12,6 +12,7 @@ from typing import List, Dict, Optional, Tuple, Union
 import argparse
 from pathlib import Path
 import json
+import os
 import time
 import numpy as np
 import cv2
@@ -48,8 +49,14 @@ def run_pipeline(
 ):
     cfg = load_config(config_path)
 
-    # Determine source URI: CLI flag takes precedence, else config.yaml, else fallback
-    resolved_source = source_uri if source_uri is not None else cfg["system"].get("source", "http://192.168.1.32:8080/video")
+    # Determine source URI: CLI flag > METRO_SOURCE_OVERRIDE > config.yaml > fallback
+    source_override = os.environ.get("METRO_SOURCE_OVERRIDE")
+    if source_uri is not None:
+        resolved_source = source_uri
+    elif source_override:
+        resolved_source = source_override
+    else:
+        resolved_source = cfg["system"].get("source", "http://192.168.1.32:8080/video")
 
     zm = ZoneManager(cfg["zones"])
     tracker = ByteTracker(

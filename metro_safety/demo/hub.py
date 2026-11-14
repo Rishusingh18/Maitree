@@ -7,6 +7,7 @@ Publishes:
 - Real-time incident event log and Server-Sent Events (SSE)
 - Operator controls (Buzzer acknowledge, Mute, Test, ETS, Train State)
 """
+import os
 import time
 import json
 import queue
@@ -48,6 +49,13 @@ class LiveHub:
         self.is_fallback: bool = False
         self.source_target: str = ""
         self.retry_status: str = "Standby"
+
+        # Camera Motion & Occlusion
+        self.camera_motion: bool = False
+        self.camera_motion_reason: str = "Stable"
+
+        # Process ID Tracking (Ensures Producer & Web Server match)
+        self.producer_pid: int = os.getpid()
 
         # Telemetry
         self.live_fps: float = 0.0
@@ -93,6 +101,7 @@ class LiveHub:
                         self._latest_jpeg = jpeg.tobytes()
                         self._latest_frame_ts = time.time()
                         self._frame_seq += 1
+                        self.producer_pid = os.getpid()
 
                         # Cross-process persistence
                         try:
@@ -166,6 +175,11 @@ class LiveHub:
         """
         last_seq = -1
 
+        # Print & log PID match verification
+        server_pid = os.getpid()
+        print(f"[PID Check] Frame Buffer Producer PID: {self.producer_pid} | /video_feed Server PID: {server_pid} (Match: {self.producer_pid == server_pid})")
+        logger.info(f"[/video_feed] Serving frame stream. Producer PID: {self.producer_pid} | Server PID: {server_pid}")
+
         # Yield immediate initial frame on connection
         init_frame = self.get_latest_jpeg()
         if init_frame:
@@ -205,7 +219,9 @@ class LiveHub:
         ets_status: str = None,
         is_fallback: bool = False,
         source_target: str = "",
-        retry_status: str = ""
+        retry_status: str = "",
+        camera_motion: bool = False,
+        camera_motion_reason: str = ""
     ):
         with self._lock:
             self.live_fps = round(float(fps), 1)
@@ -219,6 +235,9 @@ class LiveHub:
                 self.source_target = str(source_target)
             if retry_status:
                 self.retry_status = str(retry_status)
+            self.camera_motion = bool(camera_motion)
+            if camera_motion_reason:
+                self.camera_motion_reason = str(camera_motion_reason)
 
             # Persist for cross-process
             try:
@@ -236,6 +255,9 @@ class LiveHub:
                     "is_fallback": self.is_fallback,
                     "source_target": self.source_target,
                     "retry_status": self.retry_status,
+                    "camera_motion": self.camera_motion,
+                    "camera_motion_reason": self.camera_motion_reason,
+                    "producer_pid": self.producer_pid,
                     "timestamp": time.time()
                 }
                 TELEMETRY_CACHE_PATH.write_text(json.dumps(t_payload))
@@ -262,7 +284,12 @@ class LiveHub:
                 "active_alert": self.active_alert,
                 "is_fallback": self.is_fallback,
                 "source_target": self.source_target,
-                "retry_status": self.retry_status
+                "retry_status": self.retry_status,
+                "camera_motion": self.camera_motion,
+                "camera_motion_reason": self.camera_motion_reason,
+                "producer_pid": self.producer_pid,
+                "server_pid": os.getpid(),
+                "pid_match": bool(self.producer_pid == os.getpid())
             }
 
         # Check cross-process disk fallback if live_fps == 0

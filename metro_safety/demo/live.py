@@ -11,6 +11,7 @@ Usage:
   python -m metro_safety.demo.live --source http://192.168.1.8:8080/video --port 5000
   python -m metro_safety.demo.live --source demo_clips/demo_jump.mp4 --loop
 """
+import os
 import sys
 import time
 import argparse
@@ -26,6 +27,8 @@ from metro_safety.config import load_config
 from metro_safety.perception.frame_source import create_frame_source, FrameSource
 from metro_safety.perception.base import Detection
 from metro_safety.perception.yolo_pose import YOLOPoseDetector
+from metro_safety.perception.camera_motion import CameraMotionDetector
+from metro_safety.perception.async_inference import AsyncInferenceWorker
 from metro_safety.tracking.tracker import ByteTracker
 from metro_safety.zones.geometry import ZoneManager
 from metro_safety.perception.train_state import TrainState, SimulatedTrainStateProvider
@@ -76,8 +79,15 @@ def run_live_pipeline(
 ):
     cfg = load_config(config_path)
 
-    # 1. Determine active camera source (CLI flag > config.yaml)
-    resolved_source = source_uri or cfg["system"].get("source", "http://192.168.1.32:8080/video")
+    # 1. Determine active camera source (CLI flag > METRO_SOURCE_OVERRIDE > config.yaml)
+    source_override = os.environ.get("METRO_SOURCE_OVERRIDE")
+    if source_uri is not None:
+        resolved_source = source_uri
+    elif source_override:
+        resolved_source = source_override
+        logger.info(f"[Live] Using METRO_SOURCE_OVERRIDE: {resolved_source}")
+    else:
+        resolved_source = cfg["system"].get("source", "http://192.168.1.32:8080/video")
 
     print("\n" + "=" * 65)
     print("  🚇 DMRC AI METRO PLATFORM SAFETY SYSTEM - LIVE MODE")
@@ -163,6 +173,17 @@ def run_live_pipeline(
         inference_size=inference_size
     )
 
+    # Decoupled async inference worker running DNN on dedicated thread (enabling 25+ FPS display rate)
+    async_inference = AsyncInferenceWorker(detector=pose_detector, frame_skip=frame_skip)
+    async_inference.start()
+
+    # Camera motion and blur detector (sparse optical flow on background features)
+    cam_motion_cfg = cfg.get("perception", {})
+    motion_detector = CameraMotionDetector(
+        motion_threshold_px=cam_motion_cfg.get("camera_motion_threshold_px", 5.0),
+        blur_threshold=cam_motion_cfg.get("camera_blur_threshold", 30.0)
+    )
+
     # 5. Initialize FrameSource (threaded, buffer size 1, drop stale frames, auto-reconnect backoff)
     frame_source: FrameSource = create_frame_source(
         source_uri=resolved_source,
@@ -203,15 +224,9 @@ def run_live_pipeline(
                 h, w = frame.shape[:2]
                 current_train_state = train_provider.get_state()
 
-                # 1. Perception (with frame skipping for CPU performance)
-                detections: List[Detection] = []
-                if frame_idx % frame_skip == 0:
-                    if pose_detector and pose_detector._model is not None:
-                        try:
-                            cached_detections = pose_detector.detect(frame)
-                        except Exception as det_err:
-                            logger.exception(f"[Live] Pose detection error on frame {frame_idx}: {det_err}")
-                detections = cached_detections
+                # 1. Perception (Decoupled background inference)
+                async_inference.submit_frame(frame, frame_idx)
+                detections = async_inference.get_latest_detections()
 
                 # Fallback for synthetic demo video clips
                 if not detections:
@@ -242,11 +257,20 @@ def run_live_pipeline(
                 # 2. Tracking
                 tracks = tracker.update(detections)
 
+                # Camera motion & blur estimation (sparse LK optical flow on background)
+                person_boxes = [trk.box for trk in tracks] if tracks else [d.box for d in detections]
+                is_camera_moving, cam_disp, cam_blur, cam_reason = motion_detector.estimate_motion(frame, person_boxes)
+
                 # 3. Behavior Classification
                 rule_events = rule_clf.process_frame(frame_idx, frame_ts, tracks, zm, current_train_state)
                 learned_events = learned_clf.process_frame(frame_idx, frame_ts, tracks, zm, current_train_state)
                 gesture_events = gesture_det.process_frame(frame_idx, frame_ts, tracks, zm, current_train_state)
                 all_events = rule_events + learned_events + gesture_events
+
+                # Tag events with camera motion status for escalation gating
+                for ev in all_events:
+                    ev.camera_motion = is_camera_moving
+                    ev.motion_reason = cam_reason
 
                 # Check active intrusion in danger zones for buzzer clear-timeout
                 has_intrusion = False
@@ -365,7 +389,9 @@ def run_live_pipeline(
                         train_state=current_train_state.value,
                         is_fallback=is_fallback,
                         source_target=primary_tgt,
-                        retry_status=retry_stat
+                        retry_status=retry_stat,
+                        camera_motion=is_camera_moving,
+                        camera_motion_reason=cam_reason
                     )
                 except Exception as tel_err:
                     logger.exception(f"[Live] Telemetry update error: {tel_err}")
@@ -447,6 +473,21 @@ def run_live_pipeline(
                         1
                     )
 
+                # Camera motion warning banner (prominent orange banner)
+                if is_camera_moving:
+                    cm_top = 84 if is_fallback else 42
+                    cm_bot = cm_top + 34
+                    cv2.rectangle(annotated, (0, cm_top), (w, cm_bot), (0, 140, 255), -1)
+                    cv2.putText(
+                        annotated,
+                        f"CAMERA MOVING: needs operator review | {cam_reason}",
+                        (15, cm_top + 22),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.52,
+                        (255, 255, 255),
+                        2
+                    )
+
                 # Bottom Escalation Banner
                 if active_alert_banner and time.time() < banner_expire_time:
                     sev, banner_msg = active_alert_banner
@@ -487,6 +528,10 @@ def run_live_pipeline(
 
     finally:
         print("[Live] Cleaning up hardware resources...")
+        try:
+            async_inference.stop()
+        except Exception:
+            pass
         buzzer.stop()
         frame_source.release()
         if show_window:

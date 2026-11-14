@@ -30,6 +30,8 @@ class SafetyEvent:
     train_state: str
     evidence_frames: List[int] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    camera_motion: bool = False
+    motion_reason: str = ""
 
     def __post_init__(self):
         # Never report exactly 100% (1.0) confidence; strictly cap at 0.99 and calibrate
@@ -50,6 +52,8 @@ class SafetyEvent:
             "zone": self.zone,
             "train_state": self.train_state,
             "evidence_frames": self.evidence_frames,
-            "metadata": self.metadata
+            "metadata": self.metadata,
+            "camera_motion": self.camera_motion,
+            "motion_reason": self.motion_reason
         }
 

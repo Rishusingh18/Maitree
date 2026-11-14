@@ -95,3 +95,4 @@ def test_demo_event_tagging():
     ev_type_label = f"[DEMO] {event_type_name}" if is_fallback else event_type_name
     assert ev_type_label == "[DEMO] PERSON_FALL"
     assert ev_type_label.startswith("[DEMO]")
+

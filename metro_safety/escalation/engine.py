@@ -10,7 +10,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Union
 import time
+import logging
 import numpy as np
+
+logger = logging.getLogger("metro_safety.escalation.engine")
 
 from metro_safety.events.models import SafetyEvent, EventType, SeverityLevel
 from metro_safety.perception.train_state import TrainState
@@ -128,15 +131,27 @@ class EscalationEngine:
             buzzer_active = False  # STRICT REQUIREMENT: NO audible buzzer to protect victim
             self.notifier.send_alert(event, severity, action_msg)
 
-        # 2. Confirmed Fall or Jump -> Immediate Level 3 Emergency
+        # 2. Confirmed Fall or Jump -> Level 3 (or capped at Level 2 if camera moving)
         elif ev_type in [EventType.ACCIDENTAL_FALL, EventType.DELIBERATE_JUMP]:
-            severity = SeverityLevel.L3
-            action_msg = f"CRITICAL: {ev_type.value} on track! Actuating platform buzzer, alarm, and emergency stop recommendation."
-            buzzer_active = True
-            cr_alert = True
-            self.buzzer.activate(self.platform_id, pattern="CONTINUOUS_HIGH")
-            self.notifier.send_alert(event, severity, action_msg)
-            ets_active = self.trip_switch.trigger_stop(event, self.station_id, self.platform_id)
+            if getattr(event, "camera_motion", False):
+                severity = SeverityLevel.L2
+                action_msg = f"CAMERA MOVING: needs operator review (capped at L2 for {ev_type.value})"
+                buzzer_active = True
+                cr_alert = True
+                self.buzzer.activate(self.platform_id, pattern="REPEATING_PULSE")
+                self.notifier.send_alert(event, severity, action_msg)
+                logger.warning(
+                    f"[CameraMotionGate] Capped {ev_type.value} for Track #{event.track_id} to L2: "
+                    f"{getattr(event, 'motion_reason', 'Camera motion detected')}"
+                )
+            else:
+                severity = SeverityLevel.L3
+                action_msg = f"CRITICAL: {ev_type.value} on track! Actuating platform buzzer, alarm, and emergency stop recommendation."
+                buzzer_active = True
+                cr_alert = True
+                self.buzzer.activate(self.platform_id, pattern="CONTINUOUS_HIGH")
+                self.notifier.send_alert(event, severity, action_msg)
+                ets_active = self.trip_switch.trigger_stop(event, self.station_id, self.platform_id)
 
         # 3. Track Intrusion
         elif ev_type == EventType.TRACK_INTRUSION:
