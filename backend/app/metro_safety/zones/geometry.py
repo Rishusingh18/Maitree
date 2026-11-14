@@ -125,7 +125,11 @@ class ZoneManager:
                 if auto_fix:
                     logger.warning(f"[ZoneManager] Auto-repairing self-intersecting zone '{name}' around centroid...")
                     fixed_poly = reorder_polygon_around_centroid(poly)
-                    self.zones[name] = Zone(name, [tuple(pt) for pt in fixed_poly], strict_validate=False)
+                    repaired_valid, rep_err = validate_polygon(fixed_poly, name=name)
+                    if not repaired_valid:
+                        self.invalid_zones[name] = f"Auto-repair failed: {rep_err}"
+                        raise ValueError(f"Cannot initialize ZoneManager: repaired zone '{name}' is invalid ({rep_err}). Refusing to use invalid zone silently.")
+                    self.zones[name] = Zone(name, [tuple(pt) for pt in fixed_poly], strict_validate=True)
                 else:
                     self.invalid_zones[name] = err_msg
                     raise ValueError(f"Cannot initialize ZoneManager: saved zone '{name}' is invalid ({err_msg}). Refusing to use invalid zone silently.")
@@ -151,14 +155,15 @@ class ZoneManager:
 
     def get_polygons(self) -> Dict[str, List[List[float]]]:
         """Return dict of current active polygon vertices."""
-        return {name: [list(pt) for pt in zone.polygon.tolist()] for name, zone in self.zones.items()}
+        return {name: zone.polygon.reshape(-1, 2).tolist() for name, zone in self.zones.items()}
 
     def update_zones(self, new_zone_config: Dict[str, List[List[float]]], version: Optional[int] = None) -> bool:
         """Atomically update all zone polygons after validation."""
         temp_zones: Dict[str, Zone] = {}
         for name, poly in new_zone_config.items():
             if not poly or len(poly) < 3:
-                continue
+                logger.error(f"[ZoneManager] Proposed zone '{name}' has fewer than 3 vertices. Rejection atomic.")
+                return False
             valid, err_msg = validate_polygon(poly, name=name)
             if not valid:
                 logger.error(f"[ZoneManager] Proposed zone '{name}' failed validation ({err_msg}). Rejection atomic.")

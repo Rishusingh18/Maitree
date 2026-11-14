@@ -122,6 +122,18 @@ class AdaptiveZoneTracker:
         self.ref_w: int = 1920
         self.ref_h: int = 1080
 
+        # Worker thread synchronization & state tracking
+        self._lock = threading.RLock()
+        self._job_event = threading.Event()
+        self._stop_event = threading.Event()
+        self._pending_frame: Optional[np.ndarray] = None
+        self._pending_boxes: List[np.ndarray] = []
+        self._pending_ts: float = 0.0
+        self._pending_idx: int = 0
+        self._mode_generation: int = 0
+        self._recovery_start_time: Optional[float] = None
+        self.accepted_alignment_zones: Dict[str, List[List[float]]] = copy.deepcopy(self.baseline_zones)
+
         # Check reference frame on startup
         if self.ref_path.exists():
             self._load_reference_frame(str(self.ref_path))
@@ -132,15 +144,6 @@ class AdaptiveZoneTracker:
                 f"[AdaptiveZones] Reference frame missing at {self.ref_path}. "
                 f"State initialized to UNVERIFIED_REFERENCE. Operator verification required."
             )
-
-        # Worker thread synchronization
-        self._lock = threading.RLock()
-        self._job_event = threading.Event()
-        self._stop_event = threading.Event()
-        self._pending_frame: Optional[np.ndarray] = None
-        self._pending_boxes: List[np.ndarray] = []
-        self._pending_ts: float = 0.0
-        self._pending_idx: int = 0
 
         self.latest_result = RegistrationResult(
             status=self.status,
@@ -230,6 +233,10 @@ class AdaptiveZoneTracker:
     def set_demo_mode(self, is_demo: bool):
         """Disable registration on synthetic demo/fallback and reset state on switch."""
         with self._lock:
+            self._mode_generation += 1
+            self._pending_frame = None
+            self._pending_boxes = []
+            self._recovery_start_time = None
             if is_demo:
                 self.status = AlignmentStatus.DISABLED_DEMO
             else:
@@ -241,6 +248,7 @@ class AdaptiveZoneTracker:
                     self.current_drift_px = 0.0
                     self.current_scale = 1.0
                     self.current_zones = copy.deepcopy(self.baseline_zones)
+                    self.accepted_alignment_zones = copy.deepcopy(self.baseline_zones)
                     self.zone_manager.update_zones(self.current_zones)
 
     def submit_frame(self, frame: np.ndarray, frame_idx: int, tracked_boxes: List[np.ndarray], timestamp: float):
@@ -287,6 +295,7 @@ class AdaptiveZoneTracker:
                 boxes = self._pending_boxes
                 ts = self._pending_ts
                 idx = self._pending_idx
+                job_gen = self._mode_generation
                 self._pending_frame = None
 
             if frame is None:
@@ -298,7 +307,7 @@ class AdaptiveZoneTracker:
             reg_result.reg_time_ms = round(dt_ms, 2)
 
             with self._lock:
-                self._apply_result_with_safety_limits(reg_result, ts)
+                self._apply_result_with_safety_limits(reg_result, ts, generation=job_gen)
                 self.latest_result = reg_result
 
     def _register_direct(self, frame: np.ndarray, boxes: List[np.ndarray], timestamp: float) -> RegistrationResult:
@@ -551,10 +560,11 @@ class AdaptiveZoneTracker:
         self,
         H: np.ndarray
     ) -> Tuple[float, Dict[str, List[List[float]]]]:
-        """Transform baseline polygons via H and compute mean corner drift in pixels."""
+        """Transform baseline polygons via H and compute mean corner drift in pixels against accepted alignment."""
         transformed: Dict[str, List[List[float]]] = {}
         total_drift = 0.0
         total_points = 0
+        ref_alignment = getattr(self, "accepted_alignment_zones", self.baseline_zones)
 
         for name, poly in self.baseline_zones.items():
             pts_arr = np.array(poly, dtype=np.float32).reshape(-1, 1, 2)
@@ -568,8 +578,13 @@ class AdaptiveZoneTracker:
 
             warped = warped_raw.reshape(-1, 2)
 
-            # Compute drift from baseline
-            deltas = np.linalg.norm(warped - pts_arr.reshape(-1, 2), axis=1)
+            # Compute drift from accepted in-memory alignment
+            acc_pts = ref_alignment.get(name, poly)
+            acc_arr = np.array(acc_pts, dtype=np.float32).reshape(-1, 2)
+            if len(acc_arr) == len(warped):
+                deltas = np.linalg.norm(warped - acc_arr, axis=1)
+            else:
+                deltas = np.linalg.norm(warped - pts_arr.reshape(-1, 2), axis=1)
             total_drift += float(np.sum(deltas))
             total_points += len(deltas)
 
@@ -578,9 +593,14 @@ class AdaptiveZoneTracker:
         mean_drift = total_drift / float(max(1, total_points))
         return mean_drift, transformed
 
-    def _apply_result_with_safety_limits(self, result: RegistrationResult, timestamp: float):
+    def _apply_result_with_safety_limits(self, result: RegistrationResult, timestamp: float, generation: int = 0):
         """Apply safety limits, temporal smoothing, and atomic zone updates."""
+        if generation != self._mode_generation:
+            logger.debug("[AdaptiveZones] Discarding registration result from obsolete mode generation.")
+            return
+
         if not result.is_valid or result.homography is None or result.transformed_zones is None:
+            self._recovery_start_time = None
             self.consecutive_bad_estimates += 1
             self.consecutive_good_frames = 0
             if self.consecutive_bad_estimates >= self.max_consecutive_bad:
@@ -594,8 +614,9 @@ class AdaptiveZoneTracker:
                     )
             return
 
-        # Check total drift limit
+        # Check total drift limit against accepted alignment
         if result.drift_px > self.max_drift_px:
+            self._recovery_start_time = None
             self.drift_breached = True
             self.status = AlignmentStatus.ZONES_UNVERIFIED
             self.requires_operator_confirmation = True
@@ -611,6 +632,11 @@ class AdaptiveZoneTracker:
                 drift=result.drift_px
             )
             return
+
+        # Camera returned to valid drift: refresh or clear stale proposals
+        if self.proposed_zones is not None and not self.drift_breached:
+            self.proposed_zones = None
+            self.proposed_homography = None
 
         # Check max correction rate per second
         dt = max(0.01, timestamp - self.last_correction_time)
@@ -650,6 +676,7 @@ class AdaptiveZoneTracker:
             if not v:
                 logger.error(f"[AdaptiveZones] Transformed zone '{zn}' failed validation: {m}. Update rejected.")
                 self.consecutive_bad_estimates += 1
+                self._recovery_start_time = None
                 return
 
         # Atomic zone update in ZoneManager
@@ -661,24 +688,27 @@ class AdaptiveZoneTracker:
             self.current_scale = result.scale
             self.last_correction_time = timestamp
 
-            # Compute current drift from baseline
+            # Compute current drift from accepted alignment
             total_d = 0.0
             total_n = 0
+            ref_alignment = getattr(self, "accepted_alignment_zones", self.baseline_zones)
             for name, pts in self.current_zones.items():
-                base_pts = self.baseline_zones.get(name)
+                base_pts = ref_alignment.get(name, self.baseline_zones.get(name))
                 if base_pts and len(base_pts) == len(pts):
                     deltas = np.linalg.norm(np.array(pts) - np.array(base_pts), axis=1)
                     total_d += float(np.sum(deltas))
                     total_n += len(deltas)
             self.current_drift_px = total_d / float(max(1, total_n))
 
-            # Hysteresis recovery
+            # Hysteresis recovery using elapsed time
             self.consecutive_bad_estimates = 0
             self.consecutive_good_frames += 1
-            if self.consecutive_good_frames >= int(self.recovery_good_sec * (25.0 / self.interval_frames)):
+            if self._recovery_start_time is None:
+                self._recovery_start_time = timestamp
+            elif (timestamp - self._recovery_start_time) >= self.recovery_good_sec:
                 if not self.drift_breached:
                     self.status = AlignmentStatus.ALIGNED if self.current_drift_px < 5.0 else AlignmentStatus.DRIFTING
-                    self.requires_operator_confirmation = False
+                    # Note: requires_operator_confirmation is kept separate and only cleared by operator in confirm_alignment()
 
             # Audit log corrections larger than 1.0 px (no flooding)
             if max_step_taken > 1.0:
@@ -698,6 +728,7 @@ class AdaptiveZoneTracker:
             if self.status == AlignmentStatus.UNVERIFIED_REFERENCE:
                 self.status = AlignmentStatus.ALIGNED
                 self.requires_operator_confirmation = False
+                self.accepted_alignment_zones = copy.deepcopy(self.current_zones)
                 self._log_audit_change(
                     event_type="OPERATOR_CONFIRMED_REFERENCE",
                     action="Operator confirmed initial auto-captured reference frame. Zones verified.",
@@ -717,14 +748,18 @@ class AdaptiveZoneTracker:
                 self.zone_manager.update_zones(self.proposed_zones, version=self.zone_version)
                 self.current_zones = copy.deepcopy(self.proposed_zones)
                 self.last_good_zones = copy.deepcopy(self.proposed_zones)
+                self.accepted_alignment_zones = copy.deepcopy(self.proposed_zones)
                 self.proposed_zones = None
                 self.proposed_homography = None
+            else:
+                self.accepted_alignment_zones = copy.deepcopy(self.current_zones)
 
             self.status = AlignmentStatus.ALIGNED
             self.drift_breached = False
             self.requires_operator_confirmation = False
             self.consecutive_bad_estimates = 0
             self.consecutive_good_frames = 100
+            self._recovery_start_time = time.time()
 
             self._log_audit_change(
                 event_type="OPERATOR_CONFIRMED_ALIGNMENT",

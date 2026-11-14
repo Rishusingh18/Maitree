@@ -251,9 +251,12 @@ def test_repetitive_texture_rejection(sample_reference_scene, sample_zones):
 # ---------------------------------------------------------------------------
 def test_operator_confirm_api_post_vs_get(sample_zones):
     """Endpoint POST /api/zones/confirm must succeed; GET must return 405 Method Not Allowed."""
+    from backend.app.main import get_global_hub as main_hub_getter
+    from metro_safety.demo.hub import set_global_hub
     client = TestClient(fastapi_app)
 
-    hub = get_global_hub()
+    hub = main_hub_getter()
+    set_global_hub(hub)
     zm = ZoneManager(sample_zones)
     tracker = AdaptiveZoneTracker(zm)
     tracker.status = AlignmentStatus.ZONES_UNVERIFIED
@@ -309,15 +312,20 @@ def test_fall_during_unverified_preserves_escalation_with_tagging(sample_zones):
 # ---------------------------------------------------------------------------
 # TEST 6: Artificial Camera Shake Test: Zero False L3 Triggered Purely by Wobble
 # ---------------------------------------------------------------------------
-def test_artificial_shake_clip_yields_zero_false_l3():
+def test_artificial_shake_clip_yields_zero_false_l3(sample_zones):
     """Run artificial camera shake on normal stationary clip.
-    Assert zero false L3 emergency alarms are emitted purely by camera wobble.
+    Assert zero false L3 emergency alarms are emitted purely by camera wobble,
+    and verify estimated drift from AdaptiveZoneTracker against ground-truth CSV.
     """
+    from metro_safety.events.rule_classifier import RuleBasedEventClassifier
+    from metro_safety.perception.camera_motion import CameraMotionDetector
+    from metro_safety.perception.train_state import TrainState
+
     shake_result = generate_camera_shake(
         input_video_path="demo_clips/demo_normal.mp4",
         output_video_path="data/recordings/test_shaken_clip.mp4",
         ground_truth_csv_path="data/recordings/test_shaken_gt.csv",
-        max_frames=60,
+        max_frames=40,
         seed=101,
         max_dx=12.0,
         max_dy=8.0,
@@ -328,25 +336,74 @@ def test_artificial_shake_clip_yields_zero_false_l3():
     gt_csv = Path(shake_result["csv"])
     assert gt_csv.exists()
 
-    # Verify synthetic wobble values were recorded
-    drifts = []
-    import csv
-    with open(gt_csv, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for r in reader:
-            drifts.append(float(r["displacement_px"]))
+    # Read video frames
+    cap = cv2.VideoCapture(shake_result["video"])
+    frames = []
+    while True:
+        ret, f = cap.read()
+        if not ret or f is None:
+            break
+        frames.append(f)
+    cap.release()
+    assert len(frames) > 0
 
-    assert len(drifts) == shake_result["frames"]
-    assert np.max(drifts) > 5.0, "Shake simulation did not generate motion!"
+    zm = ZoneManager(sample_zones)
+    tracker = AdaptiveZoneTracker(zm, config={"adaptive_zones": {"registration_interval_frames": 1}})
+    tracker.set_reference_frame(frames[0])
 
-    # Verify drift ground truth comparison function
+    rule_clf = RuleBasedEventClassifier()
+    escalation = EscalationEngine(station_id="STN-01", platform_id="P2")
+    motion_det = CameraMotionDetector(motion_threshold_px=4.0)
+
+    estimated_drifts = {}
+    l3_alarms = []
+
+    for idx, frame in enumerate(frames):
+        ts = float(idx) * 0.04
+        is_moving, disp, blur, reason = motion_det.estimate_motion(frame, [])
+
+        # Estimate drift directly via tracker
+        reg_res = tracker._register_direct(frame, [], ts)
+        estimated_drifts[idx] = reg_res.drift_px
+
+        # Process frame through classifier and escalation pipeline
+        evs = rule_clf.process_frame(
+            idx, ts, [], zm, TrainState.ABSENT,
+            camera_motion=is_moving, motion_reason=reason
+        )
+
+        # Collect decisions for any events emitted from video processing
+        for ev in evs:
+            dec = escalation.evaluate(event=ev, train_state=None, current_time=ts)
+            if dec.severity == SeverityLevel.L3:
+                l3_alarms.append((idx, dec))
+
+        # Verification of camera motion gating: if camera is moving, even a high-severity candidate must be downgraded to L2
+        if is_moving:
+            hypothetical_fall = SafetyEvent(
+                event_type=EventType.ACCIDENTAL_FALL,
+                confidence=0.92,
+                track_id=99,
+                timestamp=ts,
+                zone="track_bed",
+                train_state="ABSENT",
+                camera_motion=True,
+                motion_reason=reason,
+                zones_unverified=reg_res.zones_unverified
+            )
+            gated_dec = escalation.evaluate(event=hypothetical_fall, train_state=None, current_time=ts)
+            assert gated_dec.severity != SeverityLevel.L3, f"Camera motion failed to gate L3 alert on frame {idx}!"
+
+    tracker.stop()
+
+    # Verify drift against ground truth using actual tracker estimated drifts
     passed, rms_err, max_err = verify_drift_against_ground_truth(
-        estimated_drifts=drifts,  # Perfect match sanity check
+        estimated_drifts=estimated_drifts,
         ground_truth_csv_path=str(gt_csv),
-        max_rms_threshold_px=1.0
+        max_rms_threshold_px=3.5
     )
-    assert passed
-    assert rms_err < 1e-4
+    assert passed, f"Estimated drift RMS error {rms_err:.2f}px exceeded limit 3.5px"
+    assert len(l3_alarms) == 0, f"Camera shake produced false L3 alarms: {len(l3_alarms)}"
 
 
 # ---------------------------------------------------------------------------

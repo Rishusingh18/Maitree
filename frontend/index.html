@@ -3556,9 +3556,15 @@
     function confirmZoneAlignment() {
       const btn = document.getElementById('btn-confirm-zones');
       if (btn) btn.disabled = true;
+      const headers = { 'Content-Type': 'application/json' };
+      const urlParams = new URLSearchParams(window.location.search);
+      const apiKey = urlParams.get('key') || window.API_KEY || localStorage.getItem('dmrc_api_key') || localStorage.getItem('api_key');
+      if (apiKey) {
+        headers['X-API-Key'] = apiKey;
+      }
       fetch('/api/zones/confirm', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: headers
       })
         .then(r => {
           if (!r.ok) throw new Error(`HTTP ${r.status}`);

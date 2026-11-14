@@ -118,6 +118,10 @@ def run_pipeline(
             buzzer = None
             hub.set_hardware_components(zone_tracker=zone_tracker)
     else:
+        if "audio_enabled" in buzzer_cfg:
+            buzzer.audio_enabled = bool(buzzer_cfg["audio_enabled"])
+        if "clear_timeout_sec" in buzzer_cfg:
+            buzzer.clear_timeout_sec = float(buzzer_cfg["clear_timeout_sec"])
         hub.set_hardware_components(buzzer=buzzer, zone_tracker=zone_tracker)
 
     escalation = EscalationEngine(
@@ -240,7 +244,7 @@ def run_pipeline(
 
             # Adaptive Zone Tracking: Non-blocking frame registration
             person_boxes = [d.box for d in tracked_dets] if tracked_dets else [d.box for d in detections]
-            zone_tracker.submit_frame(frame, frame_idx, person_boxes, frame_ts)
+            zone_tracker.submit_frame(frame.copy(), frame_idx, person_boxes, frame_ts)
             reg_result = zone_tracker.get_latest_result()
 
             # 3. Behavior Events & Gestures
@@ -248,20 +252,10 @@ def run_pipeline(
             gest_evs = gesture_det.process_frame(frame_idx, frame_ts, tracked_dets, zm, train_state)
             all_evs = rule_evs + gest_evs
 
-            # Tag events with zone tracking metadata & apply dual cooldown when unverified
-            filtered_evs = []
+            # Tag events with zone tracking metadata
             for ev in all_evs:
                 ev.zones_unverified = reg_result.zones_unverified
                 ev.zone_version = reg_result.zone_version
-                if reg_result.zones_unverified:
-                    z_name = getattr(ev, "zone", "platform")
-                    ev_type_name = getattr(getattr(ev, "event_type", None), "name", str(getattr(ev, "event_type", "EVENT")))
-                    z_key = (z_name, ev_type_name)
-                    if frame_ts - last_zone_event_time.get(z_key, 0.0) < zone_cooldown_sec:
-                        continue
-                    last_zone_event_time[z_key] = frame_ts
-                filtered_evs.append(ev)
-            all_evs = filtered_evs
 
             # Per-frame escalation lifecycle: clear confirmed resolved tracks (present in safe platform with no active hazards)
             active_hazard_tracks = {ev.track_id for ev in all_evs if hasattr(ev, 'track_id')}
@@ -279,7 +273,7 @@ def run_pipeline(
                 except Exception:
                     pass
 
-            # 4. Closed-Loop Escalation: Select displayed decision by explicit severity priority (L3 > L2 > L1 > DISTRESS > NORMAL)
+            # 4. Closed-Loop Escalation: Evaluate all events first before deduplication/cooldown filters
             SEVERITY_PRIORITY = {
                 SeverityLevel.L3: 4,
                 SeverityLevel.L2: 3,
@@ -294,6 +288,16 @@ def run_pipeline(
                     current_decision = dec
                 if reg_result.zones_unverified and not dec.action_taken.startswith("[ZONES UNVERIFIED]"):
                     dec.action_taken = f"[ZONES UNVERIFIED] {dec.action_taken}"
+
+                # Deduplication / Cooldown filter for notification & logging
+                if reg_result.zones_unverified:
+                    z_name = getattr(ev, "zone", "platform")
+                    ev_type_name = getattr(getattr(ev, "event_type", None), "name", str(getattr(ev, "event_type", "EVENT")))
+                    z_key = (z_name, ev_type_name)
+                    if frame_ts - last_zone_event_time.get(z_key, 0.0) < zone_cooldown_sec:
+                        continue
+                    last_zone_event_time[z_key] = frame_ts
+
                 ev_data = ev.to_dict() if hasattr(ev, 'to_dict') else {}
                 log_entry = {
                     "frame": frame_idx,
@@ -311,12 +315,13 @@ def run_pipeline(
 
                 # Push to live hub for dashboard & SSE streaming (unique ID per event in frame)
                 try:
+                    norm_event_type = ev_data.get("event_type", getattr(getattr(ev, "event_type", None), "value", str(getattr(ev, "event_type", "INCIDENT"))))
                     hub.push_event({
                         "id": f"EV-{int(frame_ts * 1000)}-{frame_idx}-{ev_idx}",
                         "timestamp": frame_ts,
                         "time_str": time.strftime("%H:%M:%S", time.localtime(frame_ts)),
                         "track_id": getattr(ev, "track_id", 0),
-                        "event_type": getattr(ev, "event_type", ev_data.get("event_type", "INCIDENT")),
+                        "event_type": norm_event_type,
                         "zone": getattr(ev, "zone", "platform"),
                         "severity": dec.severity.value,
                         "confidence": getattr(ev, "confidence", 0.95),

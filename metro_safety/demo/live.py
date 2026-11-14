@@ -342,7 +342,7 @@ def run_live_pipeline(
                 zone_tracker.set_demo_mode(is_demo)
 
                 person_boxes = [trk.box for trk in tracks] if tracks else [d.box for d in detections]
-                zone_tracker.submit_frame(frame, frame_idx, person_boxes, frame_ts)
+                zone_tracker.submit_frame(frame.copy(), frame_idx, person_boxes, frame_ts)
                 reg_result = zone_tracker.get_latest_result()
 
                 for ev in all_events:
@@ -350,19 +350,6 @@ def run_live_pipeline(
                     ev.zone_version = reg_result.zone_version
 
                 for ev in all_events:
-                    # Event Deduplication: Cooldown per (track_id, event_type)
-                    dedup_key = (ev.track_id, ev.event_type.name)
-                    if frame_ts - last_event_time.get(dedup_key, 0.0) < event_cooldown_sec:
-                        continue
-                    last_event_time[dedup_key] = frame_ts
-
-                    # Dual cooldown during UNVERIFIED state to prevent alert storms
-                    if reg_result.zones_unverified:
-                        z_key = (ev.zone, ev.event_type.name)
-                        if frame_ts - last_zone_event_time.get(z_key, 0.0) < zone_cooldown_sec:
-                            continue
-                        last_zone_event_time[z_key] = frame_ts
-
                     try:
                         dec = escalation.evaluate(
                             event=ev,
@@ -370,6 +357,22 @@ def run_live_pipeline(
                             current_time=frame_ts,
                             snapshot=frame
                         )
+
+                        # Event Deduplication: Cooldown per (track_id, event_type)
+                        dedup_key = (ev.track_id, ev.event_type.name)
+                        if frame_ts - last_event_time.get(dedup_key, 0.0) < event_cooldown_sec:
+                            continue
+
+                        # Dual cooldown during UNVERIFIED state to prevent alert storms
+                        if reg_result.zones_unverified:
+                            z_key = (ev.zone, ev.event_type.name)
+                            if frame_ts - last_zone_event_time.get(z_key, 0.0) < zone_cooldown_sec:
+                                continue
+                            last_zone_event_time[z_key] = frame_ts
+
+                        # Update last_event_time ONLY after both cooldown guards accept the event
+                        last_event_time[dedup_key] = frame_ts
+
                         sev = dec.severity.name
                         kine = rule_clf.get_track_kinematics(ev.track_id)
 

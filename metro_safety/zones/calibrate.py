@@ -240,29 +240,65 @@ def calibrate_zones(
             except Exception as e:
                 print(f"[Backup Warning] Could not create backup: {e}")
 
-            # Save reference frame image and reference polygons
-            ref_img_path = Path("data/reference_frame.jpg")
-            ref_img_path.parent.mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(str(ref_img_path), reference_frame)
+            # Save reference frame image and reference polygons (configuration-specific and staged)
+            cfg_stem = cfg_file.stem
+            if cfg_stem in ("config", "config_baseline"):
+                ref_img_name = "reference_frame.jpg"
+                ref_poly_name = "reference_polygons.json"
+            else:
+                ref_img_name = f"reference_frame_{cfg_stem}.jpg"
+                ref_poly_name = f"reference_polygons_{cfg_stem}.json"
 
-            ref_poly_path = Path("data/reference_polygons.json")
-            with open(ref_poly_path, "w", encoding="utf-8") as rf:
-                json.dump({
-                    "zones": saved_zones,
-                    "resolution": [int(w), int(h)],
-                    "timestamp": time.time(),
-                    "source": source_uri
-                }, rf, indent=2)
+            ref_dir = Path("data")
+            ref_dir.mkdir(parents=True, exist_ok=True)
+            ref_img_path = ref_dir / ref_img_name
+            ref_poly_path = ref_dir / ref_poly_name
 
-            # Update config file
-            cfg["zones"] = saved_zones
-            h, w = reference_frame.shape[:2]
-            cfg["system"]["input_resolution"] = [int(w), int(h)]
-            cfg["system"]["source"] = source_uri
-            cfg["reference_frame"] = "data/reference_frame.jpg"
+            # Staged temporary files
+            tmp_img_path = ref_dir / f"{ref_img_name}.tmp"
+            tmp_poly_path = ref_dir / f"{ref_poly_name}.tmp"
+            tmp_cfg_path = cfg_file.with_suffix(".yaml.tmp")
 
-            with open(cfg_file, "w", encoding="utf-8") as f:
-                yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+            try:
+                # 1. Write staged image
+                success_img = cv2.imwrite(str(tmp_img_path), reference_frame)
+                if not success_img:
+                    raise IOError(f"cv2.imwrite failed for staged path: {tmp_img_path}")
+
+                # 2. Write staged polygons
+                with open(tmp_poly_path, "w", encoding="utf-8") as rf:
+                    json.dump({
+                        "zones": saved_zones,
+                        "resolution": [int(w), int(h)],
+                        "timestamp": time.time(),
+                        "source": source_uri
+                    }, rf, indent=2)
+
+                # 3. Write staged config
+                cfg["zones"] = saved_zones
+                h, w = reference_frame.shape[:2]
+                cfg["system"]["input_resolution"] = [int(w), int(h)]
+                cfg["system"]["source"] = source_uri
+                cfg["reference_frame"] = str(ref_img_path).replace("\\", "/")
+
+                with open(tmp_cfg_path, "w", encoding="utf-8") as f:
+                    yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+
+                # 4. Atomic publish only after all writes succeed
+                shutil.move(str(tmp_img_path), str(ref_img_path))
+                shutil.move(str(tmp_poly_path), str(ref_poly_path))
+                shutil.move(str(tmp_cfg_path), str(cfg_file))
+            except Exception as write_err:
+                for tmp_p in [tmp_img_path, tmp_poly_path, tmp_cfg_path]:
+                    if tmp_p.exists():
+                        try:
+                            tmp_p.unlink()
+                        except Exception:
+                            pass
+                status_bar_msg = f"Failed to save artifacts: {write_err}"
+                status_color = (0, 0, 255)
+                print(f"[Save Error] Failed to persist calibration: {write_err}")
+                continue
 
             print(f"\n[SUCCESS] Calibrated zones & reference frame saved into: {cfg_file}")
             print(f"Reference frame image saved to: {ref_img_path}")

@@ -285,7 +285,9 @@ class RuleBasedEventClassifier:
         timestamp: float,
         tracked_detections: List[Detection],
         zone_manager: ZoneManager,
-        train_state: TrainState
+        train_state: TrainState,
+        camera_motion: bool = False,
+        motion_reason: str = ""
     ) -> List[SafetyEvent]:
         """Update each active track machine and collect all triggered safety events."""
         events: List[SafetyEvent] = []
@@ -326,6 +328,8 @@ class RuleBasedEventClassifier:
                 train_state=train_state
             )
             if ev:
+                ev.camera_motion = bool(camera_motion)
+                ev.motion_reason = str(motion_reason)
                 events.append(ev)
 
         # Prune inactive tracks after a bounded recovery interval (30 frames / ~1 second)

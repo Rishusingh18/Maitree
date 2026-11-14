@@ -271,17 +271,17 @@ class LiveHub:
 
             # Adaptive zone status
             adaptive_info = {
-                "status": "ALIGNED",
+                "status": "UNAVAILABLE",
                 "inliers": 0,
-                "inlier_ratio": 1.0,
-                "confidence": 1.0,
+                "inlier_ratio": 0.0,
+                "confidence": 0.0,
                 "drift_px": 0.0,
                 "scale": 1.0,
                 "zone_version": 1,
                 "registration_cost_ms": 0.0,
-                "requires_operator_confirmation": False,
-                "zones_unverified": False,
-                "failure_reason": ""
+                "requires_operator_confirmation": True,
+                "zones_unverified": True,
+                "failure_reason": "Zone tracker unavailable or uninitialized"
             }
             if self.zone_tracker:
                 try:
@@ -299,8 +299,20 @@ class LiveHub:
                         "zones_unverified": bool(reg.zones_unverified),
                         "failure_reason": str(reg.failure_reason)
                     }
-                except Exception:
-                    pass
+                except Exception as e:
+                    adaptive_info = {
+                        "status": "UNAVAILABLE",
+                        "inliers": 0,
+                        "inlier_ratio": 0.0,
+                        "confidence": 0.0,
+                        "drift_px": 0.0,
+                        "scale": 1.0,
+                        "zone_version": 1,
+                        "registration_cost_ms": 0.0,
+                        "requires_operator_confirmation": True,
+                        "zones_unverified": True,
+                        "failure_reason": f"Tracker read error: {e}"
+                    }
 
             # Persist for cross-process
             try:
@@ -344,17 +356,17 @@ class LiveHub:
                 "clear_timer_remaining": 0.0
             }
             adaptive_info = {
-                "status": "ALIGNED",
+                "status": "UNAVAILABLE",
                 "inliers": 0,
-                "inlier_ratio": 1.0,
-                "confidence": 1.0,
+                "inlier_ratio": 0.0,
+                "confidence": 0.0,
                 "drift_px": 0.0,
                 "scale": 1.0,
                 "zone_version": 1,
                 "registration_cost_ms": 0.0,
-                "requires_operator_confirmation": False,
-                "zones_unverified": False,
-                "failure_reason": ""
+                "requires_operator_confirmation": True,
+                "zones_unverified": True,
+                "failure_reason": "Zone tracker unavailable or uninitialized"
             }
             if self.zone_tracker:
                 try:
@@ -372,8 +384,20 @@ class LiveHub:
                         "zones_unverified": bool(reg.zones_unverified),
                         "failure_reason": str(reg.failure_reason)
                     }
-                except Exception:
-                    pass
+                except Exception as e:
+                    adaptive_info = {
+                        "status": "UNAVAILABLE",
+                        "inliers": 0,
+                        "inlier_ratio": 0.0,
+                        "confidence": 0.0,
+                        "drift_px": 0.0,
+                        "scale": 1.0,
+                        "zone_version": 1,
+                        "registration_cost_ms": 0.0,
+                        "requires_operator_confirmation": True,
+                        "zones_unverified": True,
+                        "failure_reason": f"Tracker read error: {e}"
+                    }
 
             res = {
                 "session_id": self.session_id,
@@ -673,7 +697,7 @@ class LiveHub:
         if tracker is not None:
             success, msg = tracker.confirm_alignment()
             return {"status": "ok" if success else "error", "message": msg}
-        return {"status": "ok", "message": "Zone alignment verified (in memory)."}
+        return {"status": "error", "message": "Zone tracker unavailable; alignment cannot be confirmed."}
 
 
 

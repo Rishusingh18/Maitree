@@ -863,6 +863,11 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
     @app.route("/api/zones/confirm", methods=["POST"])
     def api_zones_confirm():
         """Operator confirmation of current or proposed zone alignment."""
+        expected_key = os.environ.get("API_KEY")
+        if expected_key:
+            req_key = request.headers.get("X-API-Key") or request.args.get("key")
+            if req_key != expected_key:
+                return jsonify({"status": "error", "message": "Unauthorized"}), 403
         return jsonify(active_hub.confirm_zone_alignment())
 
     return app

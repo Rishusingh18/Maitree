@@ -7,7 +7,7 @@ import argparse
 import csv
 import math
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Union, Optional
 import cv2
 import numpy as np
 
@@ -43,28 +43,44 @@ def generate_camera_shake(
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     writer = cv2.VideoWriter(str(out_p), fourcc, fps, (w, h))
+    if not writer.isOpened():
+        if cap.isOpened():
+            cap.release()
+        raise IOError(f"Failed to open VideoWriter for output path: {out_p}")
 
     records = []
     frame_idx = 0
 
-    # Smooth sinusoidal + Perlin-like random walk wobble
-    phase_x = np.random.uniform(0, 2 * math.pi)
-    phase_y = np.random.uniform(0, 2 * math.pi)
-    phase_r = np.random.uniform(0, 2 * math.pi)
-
-    # Base synthetic pattern if video not opened
+    # Base synthetic pattern across all 4 quadrants if video not opened
     base_frame = np.zeros((h, w, 3), dtype=np.uint8)
-    # Draw realistic platform textured lines
-    cv2.rectangle(base_frame, (0, 0), (w, h), (40, 45, 50), -1)
-    for y in range(0, h, 40):
-        cv2.line(base_frame, (0, y), (w, y), (65, 70, 75), 1)
-    for x in range(0, w, 50):
-        cv2.line(base_frame, (x, 0), (x, h), (65, 70, 75), 1)
-    # Visual landmarks / posters
-    cv2.rectangle(base_frame, (50, 40), (220, 150), (120, 160, 200), -1)
-    cv2.rectangle(base_frame, (350, 40), (580, 180), (180, 140, 120), -1)
-    cv2.putText(base_frame, "DMRC STATION OCC", (70, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-    cv2.putText(base_frame, "PLATFORM 2 SAFETY", (370, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    for y in range(h):
+        val = int(50 + 120 * (y / float(h)))
+        base_frame[y, :] = [val - 10, val, val + 10]
+
+    for y in range(60, h, 35):
+        cv2.line(base_frame, (0, y), (w, y), (40, 45, 50), 2)
+    for x in range(0, w, 45):
+        cv2.line(base_frame, (x, 60), (x, h), (40, 45, 50), 2)
+
+    # Distinct high-contrast landmarks covering all 4 quadrants
+    cv2.rectangle(base_frame, (50, 80), (190, 220), (30, 80, 220), -1)    # Top-Left
+    cv2.rectangle(base_frame, (420, 90), (580, 240), (220, 160, 40), -1)  # Top-Right
+    cv2.rectangle(base_frame, (220, 250), (380, 410), (50, 180, 70), -1)  # Center
+    cv2.rectangle(base_frame, (50, 270), (180, 420), (80, 140, 200), -1)   # Bottom-Left
+    cv2.rectangle(base_frame, (440, 310), (590, 440), (140, 60, 180), -1) # Bottom-Right
+
+    cv2.putText(base_frame, "DMRC METRO OCC", (60, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    cv2.putText(base_frame, "PLATFORM 2 SOUTH", (430, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    cv2.putText(base_frame, "ENTRY GATE A", (60, 350), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
+    cv2.putText(base_frame, "TRACK 2 HAZARD", (450, 360), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
+    cv2.circle(base_frame, (300, 330), 40, (255, 255, 255), -1)
+    cv2.circle(base_frame, (300, 330), 25, (0, 0, 0), -1)
+    cv2.circle(base_frame, (520, 400), 18, (255, 200, 0), -1)
+
+    # Wobble starts smoothly from stationary reference at t=0
+    phase_x = 0.0
+    phase_y = 0.0
+    phase_r = 0.0
 
     try:
         while frame_idx < max_frames:
@@ -117,25 +133,63 @@ def generate_camera_shake(
 
 
 def verify_drift_against_ground_truth(
-    estimated_drifts: List[float],
+    estimated_drifts: Union[List[float], Dict[int, float], List[Tuple[int, float]]],
     ground_truth_csv_path: str,
-    max_rms_threshold_px: float = 3.5
+    max_rms_threshold_px: float = 3.5,
+    eval_window: Optional[Tuple[int, int]] = None
 ) -> Tuple[bool, float, float]:
     """Verify tracked drift estimates against wobble ground truth.
+    Supports either frame-aligned dense lists (length must match) or sparse mappings by frame index.
     Returns (passed, rms_error, max_error).
     """
-    gt_drifts = []
+    gt_map = {}
     with open(ground_truth_csv_path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            gt_drifts.append(float(row["displacement_px"]))
+            f_idx = int(row["frame"])
+            gt_map[f_idx] = float(row["displacement_px"])
 
-    min_len = min(len(estimated_drifts), len(gt_drifts))
-    if min_len == 0:
+    if not gt_map:
         return False, 999.0, 999.0
 
-    est = np.array(estimated_drifts[:min_len])
-    gt = np.array(gt_drifts[:min_len])
+    pairs = []
+    if isinstance(estimated_drifts, dict):
+        for f_idx, est_d in estimated_drifts.items():
+            if eval_window and not (eval_window[0] <= f_idx <= eval_window[1]):
+                continue
+            if f_idx in gt_map:
+                pairs.append((float(est_d), gt_map[f_idx]))
+    elif isinstance(estimated_drifts, list) and estimated_drifts and isinstance(estimated_drifts[0], (tuple, list)):
+        for f_idx, est_d in estimated_drifts:
+            if eval_window and not (eval_window[0] <= f_idx <= eval_window[1]):
+                continue
+            if f_idx in gt_map:
+                pairs.append((float(est_d), gt_map[f_idx]))
+    else:
+        # Dense list
+        if eval_window:
+            start_f, end_f = eval_window
+            window_len = end_f - start_f + 1
+            if len(estimated_drifts) < window_len:
+                raise ValueError(f"Dense estimated_drifts ({len(estimated_drifts)}) does not cover eval_window {eval_window}")
+            for offset, f_idx in enumerate(range(start_f, end_f + 1)):
+                if f_idx in gt_map:
+                    pairs.append((float(estimated_drifts[offset]), gt_map[f_idx]))
+        else:
+            if len(estimated_drifts) != len(gt_map):
+                raise ValueError(
+                    f"Mismatched sequence lengths: estimated_drifts has {len(estimated_drifts)} items, "
+                    f"ground truth has {len(gt_map)} frames. Use {{frame_idx: drift}} mapping for sparse evaluation."
+                )
+            for f_idx in range(len(estimated_drifts)):
+                if f_idx in gt_map:
+                    pairs.append((float(estimated_drifts[f_idx]), gt_map[f_idx]))
+
+    if not pairs:
+        return False, 999.0, 999.0
+
+    est = np.array([p[0] for p in pairs])
+    gt = np.array([p[1] for p in pairs])
 
     errors = est - gt
     rms_error = float(np.sqrt(np.mean(errors ** 2)))
