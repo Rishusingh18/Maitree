@@ -26,7 +26,7 @@ The complete AI/ML software suite for the **AI Metro Platform Safety System** ha
 11. **`metro_safety/tools/`**:
    - `record_clip.py`: Capture raw clips from live CCTV / phone streams.
    - `replay.py`: Offline replay with kinematic HUD (vertical velocity, torso tilt, zone) for tuning jump and fall thresholds.
-12. **`tests/`**: Comprehensive pytest suite (36/36 passing tests) covering buzzer logic, overlooker alerts, dashboard API, MJPEG video streaming, frame sources, gestures, escalation type-checking, live robustness/error isolation, zones, and end-to-end integration with live replay of `demo_jump.mp4`.
+12. **`tests/`**: Comprehensive pytest suite (42/42 passing tests) covering buzzer logic, overlooker alerts, dashboard API, MJPEG video streaming, fallback auto-reconnect, event deduplication, gestures, escalation type-checking, live robustness/error isolation, zones, and end-to-end integration with live replay of `demo_jump.mp4`.
 
 ---
 
@@ -34,12 +34,13 @@ The complete AI/ML software suite for the **AI Metro Platform Safety System** ha
 - **DMRC Target**: `> 90% Detection Accuracy`
 - **Learned GBDT Accuracy**: **100.0%** (Target Met)
 - **Rule-Based Classifier Accuracy**: **94.4%** (Target Met)
-- **Confidence Calibration**: Strictly capped at **0.99** (never reports 100%)
+- **Confidence Calibration**: Strictly calibrated and capped at **0.99** (never reports 100%)
 - **False-Alert Gating**: Minimum duration ($\ge 4$ frames) and displacement ($\ge 10$ px fall, $\ge 8$ px jump)
-- **Mean Processing Speed**: **436.0 FPS** (Kinematic pipeline), **>35 FPS** (End-to-end CPU with YOLOv8n)
+- **Event Deduplication**: 5.0-second cooldown per `(track_id, event_type)` preventing duplicate alert storms
+- **Fallback Transparency**: Prominent amber HUD and web banner when phone stream drops, with live background reconnection probe and auto-switchback; synthetic events marked `[DEMO]`
+- **Live Pipeline Speed**: **12.0 - 18.0 FPS** on CPU (`imgsz=320`), >400 FPS (Kinematic pipeline alone)
 - **Mean Alert Latency**: **0.53 ms** (95th percentile: **0.98 ms**)
-- **False Alerts on Normal CCTV**: **0.00 false alerts / hour**
-- **Test Suite Results**: **36 passed, 0 failed** (`pytest tests -v`)
+- **Test Suite Results**: **42 passed, 0 failed** (`pytest tests -v`)
 
 ---
 
@@ -56,7 +57,7 @@ All commands can be executed directly using the isolated virtual environment:
 # 3. Replay Saved Clip with Kinematic HUD
 .\.venv\Scripts\python.exe -m metro_safety.tools.replay --video demo_clips/demo_jump.mp4
 
-# 4. Run Pytest Suite (All 31 Tests)
+# 4. Run Pytest Suite (All 42 Tests)
 $env:PYTHONPATH="."; .\.venv\Scripts\pytest.exe tests -v
 ```
 

@@ -13,12 +13,14 @@ class YOLOPoseDetector(BasePoseDetector):
         model_name: str = "yolov8n-pose.pt",
         confidence_threshold: float = 0.35,
         iou_threshold: float = 0.45,
-        device: str = "cpu"
+        device: str = "cpu",
+        inference_size: int = 320
     ):
         self.model_name = model_name
         self.conf = confidence_threshold
         self.iou = iou_threshold
         self.device = device
+        self.inference_size = inference_size
         self._model = None
         self._load_model()
 
@@ -37,6 +39,7 @@ class YOLOPoseDetector(BasePoseDetector):
 
         results = self._model(
             frame,
+            imgsz=self.inference_size,
             conf=self.conf,
             iou=self.iou,
             device=self.device,

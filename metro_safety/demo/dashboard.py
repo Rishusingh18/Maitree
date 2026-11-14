@@ -9,14 +9,11 @@ import time
 import json
 from pathlib import Path
 from flask import Flask, render_template_string, Response, jsonify, request
-from metro_safety.demo.hub import LiveHub
-
-# Global hub singleton for default module import / CLI run
-_GLOBAL_HUB = LiveHub()
+from metro_safety.demo.hub import LiveHub, get_global_hub
 
 def create_dashboard_app(hub: LiveHub = None) -> Flask:
     app = Flask(__name__)
-    active_hub = hub if hub is not None else _GLOBAL_HUB
+    active_hub = hub if hub is not None else get_global_hub()
 
     HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -249,13 +246,22 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
     <div class="grid">
         <!-- Left: Live Video & Event Log -->
         <div>
+            <!-- Prominent Fallback Warning Banner -->
+            <div id="fallback-banner" style="display: none; background: linear-gradient(90deg, #92400E, #B45309); color: #FEF3C7; padding: 12px 16px; border-radius: 6px; margin-bottom: 14px; font-weight: 600; font-size: 13px; border: 1px solid #F59E0B; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span>⚠️ <strong>SOURCE: DEMO CLIP</strong> (phone stream unreachable)</span>
+                    <span style="font-size: 11px; background: rgba(0,0,0,0.3); padding: 3px 8px; border-radius: 4px;" id="fallback-retry">Retrying connection...</span>
+                </div>
+                <div style="font-size: 11px; color: #FDE68A; margin-top: 4px;" id="fallback-target">Attempted: http://192.168.1.32:8080/video</div>
+            </div>
+
             <div class="card">
                 <div class="card-title">
                     <span>Live CCTV Video Feed & Real-time AI Overlays</span>
                     <span style="font-size: 12px; color: var(--text-muted);">Drop Stale: ON | Low-Latency MJPEG</span>
                 </div>
                 <div class="video-container">
-                    <img id="live-video" src="/video_feed" alt="CCTV Stream" onerror="this.onerror=null; setTimeout(() => { this.src='/video_feed?t=' + Date.now(); }, 1500);">
+                    <img id="live-video" src="/video_feed" alt="CCTV Stream" onerror="reconnectVideo(this);">
                     <div class="video-overlay-badge">
                         <span class="badge badge-l3" id="ets-badge">ETS READY</span>
                     </div>
@@ -368,6 +374,13 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
     <script>
         let isMuted = false;
 
+        function reconnectVideo(img) {
+            console.warn("MJPEG feed disconnected. Reconnecting in 1.2s...");
+            setTimeout(() => {
+                img.src = '/video_feed?t=' + Date.now();
+            }, 1200);
+        }
+
         function updateTelemetry() {
             fetch('/api/telemetry')
                 .then(r => r.json())
@@ -388,14 +401,24 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                         tBadge.className = 'badge badge-secure';
                     }
 
-                    // Online status
+                    // Online & Fallback status
                     const sBadge = document.getElementById('stream-status');
-                    if (data.is_online) {
-                        sBadge.textContent = 'LIVE STREAM';
-                        sBadge.className = 'badge badge-live';
-                    } else {
-                        sBadge.textContent = 'RECONNECTING...';
+                    const fbBanner = document.getElementById('fallback-banner');
+                    if (data.is_fallback) {
+                        fbBanner.style.display = 'block';
+                        document.getElementById('fallback-target').textContent = 'Attempted source: ' + (data.source_target || 'http://192.168.1.32:8080/video');
+                        document.getElementById('fallback-retry').textContent = data.retry_status || 'Retrying background connect...';
+                        sBadge.textContent = 'DEMO FALLBACK';
                         sBadge.className = 'badge badge-l2';
+                    } else {
+                        fbBanner.style.display = 'none';
+                        if (data.is_online) {
+                            sBadge.textContent = 'LIVE STREAM';
+                            sBadge.className = 'badge badge-live';
+                        } else {
+                            sBadge.textContent = 'RECONNECTING...';
+                            sBadge.className = 'badge badge-l2';
+                        }
                     }
 
                     // Buzzer
@@ -462,10 +485,14 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                         const actionStr = ev.action || '--';
                         const conf = ev.confidence ? (ev.confidence * 100).toFixed(0) + '%' : '--';
 
+                        const isDemo = ev.is_demo || (ev.event_type && ev.event_type.indexOf('[DEMO]') !== -1);
+                        const cleanType = ev.event_type ? ev.event_type.replace('[DEMO]', '').trim() : '--';
+                        const demoBadge = isDemo ? '<span class="badge badge-l2" style="font-size: 10px; margin-right: 4px;">DEMO</span>' : '';
+
                         html += `<tr>
                             <td>${timeStr}</td>
                             <td>#${ev.track_id}</td>
-                            <td><strong>${ev.event_type}</strong></td>
+                            <td>${demoBadge}<strong>${cleanType}</strong></td>
                             <td>${ev.zone}</td>
                             <td><span class="badge ${sevBadge}">${ev.severity}</span></td>
                             <td>${conf}</td>
@@ -634,7 +661,7 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
     return app
 
 # Default app instance
-app = create_dashboard_app(_GLOBAL_HUB)
+app = create_dashboard_app(get_global_hub())
 
 if __name__ == "__main__":
     print("[Dashboard] Running standalone on http://localhost:5000")

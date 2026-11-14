@@ -2,20 +2,28 @@
 Thread-safe bridge between the computer vision pipeline and the Flask web dashboard.
 Publishes:
 - Low-latency MJPEG video frames (/video_feed) with offline fallback frame
-- Live-measured telemetry (FPS, end-to-end latency, synthetic benchmark accuracy)
+- Dual in-memory and disk-cached buffer for seamless multi-process or single-process operation
+- Live-measured telemetry (FPS, end-to-end latency, synthetic benchmark accuracy, fallback status)
 - Real-time incident event log and Server-Sent Events (SSE)
 - Operator controls (Buzzer acknowledge, Mute, Test, ETS, Train State)
 """
 import time
+import json
 import queue
 import logging
 import threading
+from pathlib import Path
 from collections import deque
 from typing import Dict, Any, Optional, Tuple, List
 import cv2
 import numpy as np
 
 logger = logging.getLogger("metro_safety.demo.hub")
+
+CACHE_DIR = Path("logs/cache")
+FRAME_CACHE_PATH = CACHE_DIR / "live_frame.jpg"
+TELEMETRY_CACHE_PATH = CACHE_DIR / "live_telemetry.json"
+EVENTS_CACHE_PATH = CACHE_DIR / "live_events.json"
 
 
 class LiveHub:
@@ -27,13 +35,19 @@ class LiveHub:
         self.platform_id = platform_id
 
         self._lock = threading.Lock()
+        self._frame_cond = threading.Condition(self._lock)
+        self._frame_seq = 0
 
         # Video frame storage
         self._latest_jpeg: Optional[bytes] = None
         self._latest_frame_ts: float = 0.0
         self._is_online: bool = False
         self._status_msg: str = "Connecting to camera stream..."
-        self._frame_event = threading.Event()
+
+        # Source & Fallback State
+        self.is_fallback: bool = False
+        self.source_target: str = ""
+        self.retry_status: str = "Standby"
 
         # Telemetry
         self.live_fps: float = 0.0
@@ -54,6 +68,11 @@ class LiveHub:
         self.buzzer = None
         self.train_state_provider = None
 
+        try:
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
     def set_hardware_components(self, buzzer=None, train_state_provider=None):
         self.buzzer = buzzer
         self.train_state_provider = train_state_provider
@@ -73,19 +92,42 @@ class LiveHub:
                     if ret:
                         self._latest_jpeg = jpeg.tobytes()
                         self._latest_frame_ts = time.time()
+                        self._frame_seq += 1
+
+                        # Cross-process persistence
+                        try:
+                            FRAME_CACHE_PATH.write_bytes(self._latest_jpeg)
+                        except Exception:
+                            pass
                 except Exception as e:
                     logger.debug(f"Frame encoding failed: {e}")
-            self._frame_event.set()
+
+            self._frame_cond.notify_all()
 
     def get_latest_jpeg(self) -> bytes:
-        """Returns the latest annotated JPEG frame, or generates an offline standby frame."""
+        """Returns the latest annotated JPEG frame, or checks disk buffer, or generates standby frame."""
         with self._lock:
             now = time.time()
-            if self._is_online and self._latest_jpeg is not None and (now - self._latest_frame_ts) < 2.5:
+            if self._is_online and self._latest_jpeg is not None and (now - self._latest_frame_ts) < 3.0:
                 return self._latest_jpeg
 
-            # Otherwise return offline fallback frame
-            return self._generate_offline_frame()
+        # If in-memory is empty or stale (e.g., dashboard running in a separate process), check disk cache
+        if FRAME_CACHE_PATH.exists():
+            try:
+                mtime = FRAME_CACHE_PATH.stat().st_mtime
+                if (time.time() - mtime) < 3.0:
+                    cached_bytes = FRAME_CACHE_PATH.read_bytes()
+                    if cached_bytes:
+                        with self._lock:
+                            self._latest_jpeg = cached_bytes
+                            self._latest_frame_ts = mtime
+                            self._is_online = True
+                        return cached_bytes
+            except Exception:
+                pass
+
+        # Otherwise return offline fallback frame
+        return self._generate_offline_frame()
 
     def _generate_offline_frame(self) -> bytes:
         """Render a clear 'CCTV STREAM OFFLINE - RECONNECTING' standby frame."""
@@ -119,20 +161,34 @@ class LiveHub:
         return jpeg.tobytes() if ret else b""
 
     def mjpeg_generator(self):
-        """Generator yielding MJPEG multipart chunks for Flask streaming."""
+        """Generator yielding MJPEG multipart chunks for Flask streaming.
+        Standard RFC 2046 format compatible with Chrome/WebKit/Firefox without Content-Length desync.
+        """
+        last_seq = -1
+
+        # Yield immediate initial frame on connection
+        init_frame = self.get_latest_jpeg()
+        if init_frame:
+            yield (
+                b'--frame\r\n'
+                b'Content-Type: image/jpeg\r\n\r\n'
+                + init_frame + b'\r\n'
+            )
+
         while True:
-            # Wait for next frame event or timeout to emit latest frame
-            self._frame_event.wait(timeout=0.06)
-            self._frame_event.clear()
+            with self._frame_cond:
+                if self._frame_seq == last_seq:
+                    self._frame_cond.wait(timeout=0.06)
+                last_seq = self._frame_seq
+
             jpeg_bytes = self.get_latest_jpeg()
             if not jpeg_bytes:
-                time.sleep(0.04)
+                time.sleep(0.03)
                 continue
             try:
                 yield (
                     b'--frame\r\n'
-                    b'Content-Type: image/jpeg\r\n'
-                    b'Content-Length: ' + str(len(jpeg_bytes)).encode('ascii') + b'\r\n\r\n'
+                    b'Content-Type: image/jpeg\r\n\r\n'
                     + jpeg_bytes + b'\r\n'
                 )
             except GeneratorExit:
@@ -141,7 +197,16 @@ class LiveHub:
                 break
 
     # ================= Telemetry =================
-    def update_telemetry(self, fps: float, latency_ms: float, train_state: str = None, ets_status: str = None):
+    def update_telemetry(
+        self,
+        fps: float,
+        latency_ms: float,
+        train_state: str = None,
+        ets_status: str = None,
+        is_fallback: bool = False,
+        source_target: str = "",
+        retry_status: str = ""
+    ):
         with self._lock:
             self.live_fps = round(float(fps), 1)
             self.live_latency_ms = round(float(latency_ms), 2)
@@ -149,13 +214,40 @@ class LiveHub:
                 self.train_state = str(train_state).upper()
             if ets_status:
                 self.ets_status = str(ets_status).upper()
+            self.is_fallback = bool(is_fallback)
+            if source_target:
+                self.source_target = str(source_target)
+            if retry_status:
+                self.retry_status = str(retry_status)
+
+            # Persist for cross-process
+            try:
+                t_payload = {
+                    "cctv_id": self.cctv_id,
+                    "station_id": self.station_id,
+                    "platform_id": self.platform_id,
+                    "is_online": self._is_online,
+                    "status_msg": self._status_msg,
+                    "live_fps": self.live_fps,
+                    "live_latency_ms": self.live_latency_ms,
+                    "synthetic_accuracy": self.synthetic_accuracy_label,
+                    "train_state": self.train_state,
+                    "ets_status": self.ets_status,
+                    "is_fallback": self.is_fallback,
+                    "source_target": self.source_target,
+                    "retry_status": self.retry_status,
+                    "timestamp": time.time()
+                }
+                TELEMETRY_CACHE_PATH.write_text(json.dumps(t_payload))
+            except Exception:
+                pass
 
     def get_telemetry(self) -> Dict[str, Any]:
         with self._lock:
             buzzer_info = self.buzzer.get_status() if self.buzzer else {
                 "active": False, "pattern": "OFF", "muted": False, "audio_enabled": True
             }
-            return {
+            res = {
                 "cctv_id": self.cctv_id,
                 "station_id": self.station_id,
                 "platform_id": self.platform_id,
@@ -167,8 +259,26 @@ class LiveHub:
                 "train_state": self.train_state,
                 "ets_status": self.ets_status,
                 "buzzer": buzzer_info,
-                "active_alert": self.active_alert
+                "active_alert": self.active_alert,
+                "is_fallback": self.is_fallback,
+                "source_target": self.source_target,
+                "retry_status": self.retry_status
             }
+
+        # Check cross-process disk fallback if live_fps == 0
+        if res["live_fps"] == 0.0 and TELEMETRY_CACHE_PATH.exists():
+            try:
+                mtime = TELEMETRY_CACHE_PATH.stat().st_mtime
+                if (time.time() - mtime) < 4.0:
+                    cached = json.loads(TELEMETRY_CACHE_PATH.read_text())
+                    for k in ["live_fps", "live_latency_ms", "train_state", "ets_status", "is_fallback", "source_target", "retry_status"]:
+                        if k in cached:
+                            res[k] = cached[k]
+                    res["is_online"] = True
+            except Exception:
+                pass
+
+        return res
 
     # ================= Events =================
     def push_event(self, event_record: Dict[str, Any]):
@@ -182,9 +292,32 @@ class LiveHub:
                 except Exception:
                     pass
 
+        # Persist recent events to disk for cross-process
+        try:
+            with open(EVENTS_CACHE_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps(event_record) + "\n")
+        except Exception:
+            pass
+
     def get_events(self, limit: int = 50) -> List[Dict[str, Any]]:
         with self._lock:
-            return list(self.events_history)[:limit]
+            in_mem = list(self.events_history)[:limit]
+            if in_mem:
+                return in_mem
+
+        # Check disk cache if in-memory is empty
+        if EVENTS_CACHE_PATH.exists():
+            try:
+                lines = EVENTS_CACHE_PATH.read_text(encoding="utf-8").strip().splitlines()
+                disk_events = []
+                for line in reversed(lines[-limit:]):
+                    if line.strip():
+                        disk_events.append(json.loads(line))
+                return disk_events
+            except Exception:
+                pass
+
+        return []
 
     def add_sse_listener(self) -> queue.Queue:
         q = queue.Queue(maxsize=30)
@@ -252,3 +385,16 @@ class LiveHub:
             logger.info("[SAFETY TRIP] Emergency Trip Switch reset to DISENGAGED.")
             return {"status": "ok", "ets_status": "DISENGAGED"}
 
+
+# Global module singleton
+_GLOBAL_HUB_INSTANCE: Optional[LiveHub] = None
+
+def get_global_hub() -> LiveHub:
+    global _GLOBAL_HUB_INSTANCE
+    if _GLOBAL_HUB_INSTANCE is None:
+        _GLOBAL_HUB_INSTANCE = LiveHub()
+    return _GLOBAL_HUB_INSTANCE
+
+def set_global_hub(hub: LiveHub):
+    global _GLOBAL_HUB_INSTANCE
+    _GLOBAL_HUB_INSTANCE = hub

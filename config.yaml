@@ -13,6 +13,8 @@ perception:
   confidence_threshold: 0.35
   iou_threshold: 0.45
   device: cpu
+  inference_size: 320 # YOLO input resolution for real-time CPU performance (>=10 FPS)
+  frame_skip: 1 # Run inference every N frames (1 = full rate, 2 = 2x speed)
 tracking:
   tracker_type: bytetrack
   track_high_thresh: 0.5

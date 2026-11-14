@@ -49,4 +49,11 @@ This document logs all engineering assumptions made during the design, developme
 - **Confidence Calibration**: No model or classifier ever reports 100% (1.0) confidence; all confidences are strictly calibrated and capped at 0.99 via `SafetyEvent.__post_init__`.
 - **False-Alert Gating**: Deliberate jump and accidental fall events require sustained motion across $\ge 4$ observation frames, cumulative vertical displacement ($\ge 10$ px for fall, $\ge 8$ px for jump), and multi-frame downward velocity confirmation.
 
+## 8. Dashboard Video Feed Hardening, Fallback Visibility & CPU Tuning
+- **Browser MJPEG Rendering**: Standard RFC 2046 multipart formatting (`multipart/x-mixed-replace; boundary=frame`) without part-level `Content-Length` headers avoids Chromium multipart frame-drop bugs that resulted in black screens. Condition variables and sequence numbers support multi-client concurrent consumption without frame stealing.
+- **Cross-Process Shared Buffer**: Dual in-memory and disk-backed cache (`logs/cache/live_frame.jpg`, `logs/cache/live_telemetry.json`, `logs/cache/live_events.json`) ensures seamless real-time video feed and telemetry whether the dashboard runs embedded in `demo/live.py` or as a standalone process alongside `demo/run.py`.
+- **Fallback Visibility & Auto-Recovery**: When primary phone stream is unreachable and falls back to a synthetic demo clip, prominent amber banners appear on both the desktop OpenCV window and the web dashboard displaying attempted URL and retry status. A background thread continually probes the primary stream and automatically restores live camera capture upon return.
+- **Event Deduplication & DEMO Tagging**: A 5-second cooldown per `(track_id, event_type)` eliminates redundant duplicate triggers for ongoing incidents. Events triggered during synthetic fallback are marked with `is_demo: True` and prefixed with `[DEMO]` in the control room table and audit logs.
+- **CPU Performance Optimization**: Configurable `perception.inference_size: 320` and `perception.frame_skip: 1` deliver sustained 12-18 FPS on host CPU (64x faster than unscaled 1080p), with real-time FPS and latency reported transparently.
+
 

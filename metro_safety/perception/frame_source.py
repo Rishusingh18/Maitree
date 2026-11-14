@@ -50,6 +50,34 @@ class FrameSource(ABC):
         """Name/Identifier of the source."""
         pass
 
+    @property
+    def is_fallback(self) -> bool:
+        """True if currently operating on fallback demo source."""
+        return False
+
+    @property
+    def primary_target(self) -> str:
+        """Original configured source URL/device."""
+        return self.source_name
+
+    @property
+    def retry_status(self) -> str:
+        """Background retry status string."""
+        return getattr(self, "_retry_status", "")
+
+    @retry_status.setter
+    def retry_status(self, value: str):
+        self._retry_status = value
+
+    @property
+    def reconnect_count(self) -> int:
+        """Number of background reconnection attempts performed."""
+        return getattr(self, "_reconnect_count", 0)
+
+    @reconnect_count.setter
+    def reconnect_count(self, value: int):
+        self._reconnect_count = value
+
 
 class VideoFileSource(FrameSource):
     """Reads frames from a local video file with optional looping."""
@@ -125,6 +153,8 @@ class ThreadedStreamSource(FrameSource):
 
         self.reconnect_count = 0
         self._connected = False
+        self._last_fallback_retry = 0.0
+        self.retry_status = "Standby"
 
         # Attempt initial connection
         self._init_capture()
@@ -153,6 +183,7 @@ class ThreadedStreamSource(FrameSource):
                         self.latest_frame = frame
                         self.latest_timestamp = time.time()
                     self._connected = True
+                    self.retry_status = "Connected"
                     self._start_worker()
                     logger.info(f"Successfully connected to {target_display}")
                     return True
@@ -171,6 +202,9 @@ class ThreadedStreamSource(FrameSource):
         if self.fallback is not None:
             logger.warning(f"Primary source {target_display} unreachable. Engaging fallback source: {self.fallback.source_name}")
             self.using_fallback = True
+            self.retry_status = f"Retrying background connect ({target_display})..."
+            # Start background worker to retry primary connection continuously
+            self._start_worker()
             return True
 
         # If network stream without fallback, start worker anyway to attempt auto-reconnect in background
@@ -191,7 +225,33 @@ class ThreadedStreamSource(FrameSource):
         backoff = self.base_backoff
         while self.running:
             if self.using_fallback:
-                time.sleep(0.05)
+                # Fallback active: periodically probe primary stream in background to auto-switch back
+                now = time.time()
+                if now - self._last_fallback_retry >= 4.0:
+                    self._last_fallback_retry = now
+                    self.reconnect_count += 1
+                    self.retry_status = f"Retrying background connect (attempt #{self.reconnect_count})..."
+                    logger.info(f"Background retry connect to primary source {self.stream_target} (attempt #{self.reconnect_count})...")
+                    try:
+                        target_str = str(self.stream_target)
+                        new_cap = cv2.VideoCapture(target_str, cv2.CAP_FFMPEG if self.is_network else cv2.CAP_ANY)
+                        new_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                        if new_cap.isOpened():
+                            ret, frame = new_cap.read()
+                            if ret and frame is not None:
+                                self.cap = new_cap
+                                self._connected = True
+                                self.using_fallback = False
+                                self.retry_status = "Connected"
+                                logger.info(f"[FrameSource] Primary camera stream {self.stream_target} recovered! Automatically switched back from fallback clip.")
+                                with self.lock:
+                                    self.latest_frame = frame
+                                    self.latest_timestamp = time.time()
+                                continue
+                        new_cap.release()
+                    except Exception as ret_err:
+                        logger.debug(f"Background reconnect probe error: {ret_err}")
+                time.sleep(0.1)
                 continue
 
             if self.cap is None or not self.cap.isOpened():
@@ -271,6 +331,14 @@ class ThreadedStreamSource(FrameSource):
     def source_name(self) -> str:
         if self.using_fallback and self.fallback is not None:
             return f"{self.stream_target} (FALLBACK: {self.fallback.source_name})"
+        return str(self.stream_target)
+
+    @property
+    def is_fallback(self) -> bool:
+        return self.using_fallback
+
+    @property
+    def primary_target(self) -> str:
         return str(self.stream_target)
 
 

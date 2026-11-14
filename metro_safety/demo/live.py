@@ -35,7 +35,7 @@ from metro_safety.events.gesture import DistressGestureDetector
 from metro_safety.escalation.engine import EscalationEngine, SeverityLevel
 from metro_safety.escalation.buzzer import HardwareBuzzer
 from metro_safety.escalation.overlooker import OverlookerNotifier
-from metro_safety.demo.hub import LiveHub
+from metro_safety.demo.hub import LiveHub, get_global_hub, set_global_hub
 from metro_safety.demo.dashboard import create_dashboard_app
 
 logger = logging.getLogger("metro_safety.demo.live")
@@ -89,11 +89,11 @@ def run_live_pipeline(
     print("=" * 65 + "\n")
 
     # 2. Initialize Shared Hub & Hardware Adapters
-    hub = LiveHub(
-        cctv_id=cfg["system"]["camera_id"],
-        station_id=cfg["system"]["station_id"],
-        platform_id=cfg["system"]["platform_id"]
-    )
+    hub = get_global_hub()
+    hub.cctv_id = cfg["system"]["camera_id"]
+    hub.station_id = cfg["system"]["station_id"]
+    hub.platform_id = cfg["system"]["platform_id"]
+    set_global_hub(hub)
 
     buzzer_cfg = cfg.get("buzzer", {})
     buzzer = HardwareBuzzer(
@@ -153,11 +153,14 @@ def run_live_pipeline(
         platform_id=cfg["system"]["platform_id"]
     )
 
-    # YOLO pose model
+    # YOLO pose model with CPU performance tuning
+    inference_size = int(cfg["perception"].get("inference_size", 320))
+    frame_skip = max(1, int(cfg["perception"].get("frame_skip", 1)))
     pose_detector = YOLOPoseDetector(
         model_name=cfg["perception"]["model_name"],
         confidence_threshold=cfg["perception"]["confidence_threshold"],
-        device=cfg["perception"]["device"]
+        device=cfg["perception"]["device"],
+        inference_size=inference_size
     )
 
     # 5. Initialize FrameSource (threaded, buffer size 1, drop stale frames, auto-reconnect backoff)
@@ -178,6 +181,9 @@ def run_live_pipeline(
     t_prev = time.perf_counter()
     active_alert_banner = None
     banner_expire_time = 0.0
+    last_event_time = {}
+    event_cooldown_sec = 5.0
+    cached_detections: List[Detection] = []
 
     print("[Live] Video pipeline active. Monitoring stream...")
 
@@ -197,13 +203,15 @@ def run_live_pipeline(
                 h, w = frame.shape[:2]
                 current_train_state = train_provider.get_state()
 
-                # 1. Perception
+                # 1. Perception (with frame skipping for CPU performance)
                 detections: List[Detection] = []
-                if pose_detector and pose_detector._model is not None:
-                    try:
-                        detections = pose_detector.detect(frame)
-                    except Exception as det_err:
-                        logger.exception(f"[Live] Pose detection error on frame {frame_idx}: {det_err}")
+                if frame_idx % frame_skip == 0:
+                    if pose_detector and pose_detector._model is not None:
+                        try:
+                            cached_detections = pose_detector.detect(frame)
+                        except Exception as det_err:
+                            logger.exception(f"[Live] Pose detection error on frame {frame_idx}: {det_err}")
+                detections = cached_detections
 
                 # Fallback for synthetic demo video clips
                 if not detections:
@@ -253,7 +261,18 @@ def run_live_pipeline(
                     logger.exception(f"[Live] Error updating buzzer clear status: {b_err}")
 
                 # 4. Closed-Loop Escalation, Buzzer & Overlooker Notifications (Per-event isolation)
+                is_fallback = getattr(frame_source, "is_fallback", False)
+                primary_tgt = getattr(frame_source, "primary_target", resolved_source)
+                retry_stat = getattr(frame_source, "retry_status", "Active")
+                is_demo = is_fallback or ("demo" in str(resolved_source).lower())
+
                 for ev in all_events:
+                    # Event Deduplication: Cooldown per (track_id, event_type)
+                    dedup_key = (ev.track_id, ev.event_type.name)
+                    if frame_ts - last_event_time.get(dedup_key, 0.0) < event_cooldown_sec:
+                        continue
+                    last_event_time[dedup_key] = frame_ts
+
                     try:
                         dec = escalation.evaluate(
                             event=ev,
@@ -264,9 +283,12 @@ def run_live_pipeline(
                         sev = dec.severity.name
                         kine = rule_clf.get_track_kinematics(ev.track_id)
 
+                        ev_type_label = f"[DEMO] {ev.event_type.name}" if is_demo else ev.event_type.name
+                        log_tag = "[Live Event - DEMO CLIP]" if is_demo else "[Live Event]"
+
                         # Per-event debug logging (track id, zone, vertical velocity, torso angle, confidence)
                         logger.info(
-                            f"[Live Event] Track #{ev.track_id:02d} | Event: {ev.event_type.name} | "
+                            f"{log_tag} Track #{ev.track_id:02d} | Event: {ev_type_label} | "
                             f"Zone: {ev.zone} | vy: {kine['vy']:+05.1f} px/f | angle: {kine['angle']:04.1f} deg | "
                             f"Conf: {ev.confidence:.2f} | Severity: {sev}"
                         )
@@ -281,7 +303,7 @@ def run_live_pipeline(
                         # Trigger Overlooker (L2, L3, DISTRESS)
                         try:
                             overlooker.notify(
-                                event_type=ev.event_type.name,
+                                event_type=ev_type_label,
                                 severity=sev,
                                 track_id=ev.track_id,
                                 zone=ev.zone,
@@ -293,7 +315,7 @@ def run_live_pipeline(
                             logger.exception(f"[Live] Error in overlooker notification: {ov_err}")
 
                         # Set on-screen banner
-                        active_alert_banner = (sev, f"{ev.event_type.name} - {dec.action_taken}")
+                        active_alert_banner = (sev, f"{ev_type_label} - {dec.action_taken}")
                         banner_expire_time = time.time() + 3.0
 
                         # Push event to LiveHub for dashboard update
@@ -303,12 +325,13 @@ def run_live_pipeline(
                                 "timestamp": frame_ts,
                                 "time_str": time.strftime("%H:%M:%S", time.localtime()),
                                 "track_id": ev.track_id,
-                                "event_type": ev.event_type.name,
+                                "event_type": ev_type_label,
                                 "zone": ev.zone,
                                 "severity": sev,
                                 "confidence": round(ev.confidence, 2),
                                 "action": dec.action_taken,
-                                "kinematics": kine
+                                "kinematics": kine,
+                                "is_demo": is_demo
                             })
                         except Exception as hub_ev_err:
                             logger.exception(f"[Live] Error pushing event to LiveHub: {hub_ev_err}")
@@ -339,7 +362,10 @@ def run_live_pipeline(
                     hub.update_telemetry(
                         fps=curr_fps,
                         latency_ms=curr_lat,
-                        train_state=current_train_state.value
+                        train_state=current_train_state.value,
+                        is_fallback=is_fallback,
+                        source_target=primary_tgt,
+                        retry_status=retry_stat
                     )
                 except Exception as tel_err:
                     logger.exception(f"[Live] Telemetry update error: {tel_err}")
@@ -398,6 +424,28 @@ def run_live_pipeline(
                     f"TRAIN: {current_train_state.value} | BUZZER: {buzzer_str} | TARGET >90% (SYNTH: 100%)"
                 )
                 cv2.putText(annotated, hud_txt, (15, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
+                # High-visibility fallback banner (amber/orange bar)
+                if is_fallback:
+                    cv2.rectangle(annotated, (0, 40), (w, 82), (20, 120, 245), -1)
+                    cv2.putText(
+                        annotated,
+                        f"SOURCE: DEMO CLIP (phone stream unreachable) | Attempted: {primary_tgt}",
+                        (15, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        (255, 255, 255),
+                        2
+                    )
+                    cv2.putText(
+                        annotated,
+                        f"Status: {retry_stat}",
+                        (15, 76),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.42,
+                        (230, 240, 255),
+                        1
+                    )
 
                 # Bottom Escalation Banner
                 if active_alert_banner and time.time() < banner_expire_time:

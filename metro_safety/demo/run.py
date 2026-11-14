@@ -87,6 +87,13 @@ def run_pipeline(
     )
     print(f"[Pipeline] Active source: {frame_source.source_name}")
 
+    # Connect to shared LiveHub so run.py also feeds the dashboard
+    from metro_safety.demo.hub import get_global_hub
+    hub = get_global_hub()
+    hub.cctv_id = cfg["system"]["camera_id"]
+    hub.station_id = cfg["system"]["station_id"]
+    hub.platform_id = cfg["system"]["platform_id"]
+
     # Initialize YOLO pose model behind abstract interface
     pose_detector = None
     try:
@@ -94,7 +101,8 @@ def run_pipeline(
         pose_detector = YOLOPoseDetector(
             model_name=cfg["perception"]["model_name"],
             confidence_threshold=cfg["perception"]["confidence_threshold"],
-            device=cfg["perception"]["device"]
+            device=cfg["perception"]["device"],
+            inference_size=int(cfg["perception"].get("inference_size", 320))
         )
         print(f"[Pipeline] Loaded YOLO pose detector ({cfg['perception']['model_name']})")
     except Exception as e:
@@ -274,6 +282,20 @@ def run_pipeline(
             # Write frame if recording
             if writer:
                 writer.write(annotated)
+
+            # Publish to shared LiveHub for web dashboard
+            try:
+                hub.update_frame(annotated, is_online=True)
+                hub.update_telemetry(
+                    fps=avg_fps,
+                    latency_ms=avg_lat_ms,
+                    train_state=train_state.value,
+                    is_fallback=getattr(frame_source, "is_fallback", False),
+                    source_target=getattr(frame_source, "primary_target", str(resolved_source)),
+                    retry_status=getattr(frame_source, "retry_status", "Active")
+                )
+            except Exception:
+                pass
 
             # Display window
             if show_window:
