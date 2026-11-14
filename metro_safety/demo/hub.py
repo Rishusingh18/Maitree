@@ -10,6 +10,7 @@ Publishes:
 import os
 import time
 import json
+import uuid
 import queue
 import logging
 import threading
@@ -57,13 +58,24 @@ class LiveHub:
         # Process ID Tracking (Ensures Producer & Web Server match)
         self.producer_pid: int = os.getpid()
 
+        # Session ID Tracking (distinguishes events across distinct runs)
+        self.session_id: str = f"SES-{uuid.uuid4().hex[:8].upper()}"
+
         # Telemetry
         self.live_fps: float = 0.0
+        self.detector_fps: float = 0.0
         self.live_latency_ms: float = 0.0
+        self.stage_timings: Dict[str, Dict[str, float]] = {}
         self.synthetic_accuracy_label: str = "100.0% (synthetic benchmark)"
         self.train_state: str = "ABSENT"
         self.ets_status: str = "DISENGAGED"  # DISENGAGED | ARMED | ENGAGED
         self.cctv_status: str = "OPERATIONAL"
+
+        # Control States
+        self._is_muted: bool = False
+        self._acknowledged: bool = False
+        self._last_test_pattern: Optional[str] = None
+        self._last_test_time: float = 0.0
 
         # Events
         self.events_history: deque = deque(maxlen=150)
@@ -95,8 +107,8 @@ class LiveHub:
 
             if frame is not None and is_online:
                 try:
-                    # Encode to JPEG
-                    ret, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                    # Encode to JPEG (quality 70 for CPU speedup & lower payload)
+                    ret, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
                     if ret:
                         self._latest_jpeg = jpeg.tobytes()
                         self._latest_frame_ts = time.time()
@@ -221,11 +233,16 @@ class LiveHub:
         source_target: str = "",
         retry_status: str = "",
         camera_motion: bool = False,
-        camera_motion_reason: str = ""
+        camera_motion_reason: str = "",
+        detector_fps: float = 0.0,
+        stage_timings: Optional[Dict[str, Dict[str, float]]] = None
     ):
         with self._lock:
             self.live_fps = round(float(fps), 1)
+            self.detector_fps = round(float(detector_fps), 1) if detector_fps > 0 else self.live_fps
             self.live_latency_ms = round(float(latency_ms), 2)
+            if stage_timings:
+                self.stage_timings = stage_timings
             if train_state:
                 self.train_state = str(train_state).upper()
             if ets_status:
@@ -242,13 +259,16 @@ class LiveHub:
             # Persist for cross-process
             try:
                 t_payload = {
+                    "session_id": self.session_id,
                     "cctv_id": self.cctv_id,
                     "station_id": self.station_id,
                     "platform_id": self.platform_id,
                     "is_online": self._is_online,
                     "status_msg": self._status_msg,
                     "live_fps": self.live_fps,
+                    "detector_fps": self.detector_fps,
                     "live_latency_ms": self.live_latency_ms,
+                    "stage_timings": self.stage_timings,
                     "synthetic_accuracy": self.synthetic_accuracy_label,
                     "train_state": self.train_state,
                     "ets_status": self.ets_status,
@@ -267,16 +287,26 @@ class LiveHub:
     def get_telemetry(self) -> Dict[str, Any]:
         with self._lock:
             buzzer_info = self.buzzer.get_status() if self.buzzer else {
-                "active": False, "pattern": "OFF", "muted": False, "audio_enabled": True
+                "active": False,
+                "pattern": getattr(self, "_test_pattern", "OFF"),
+                "muted": getattr(self, "_is_muted", False),
+                "audio_enabled": True,
+                "acknowledged": getattr(self, "_acknowledged", False),
+                "last_test_pattern": getattr(self, "_last_test_pattern", None),
+                "last_test_time": getattr(self, "_last_test_time", 0.0),
+                "clear_timer_remaining": 0.0
             }
             res = {
+                "session_id": self.session_id,
                 "cctv_id": self.cctv_id,
                 "station_id": self.station_id,
                 "platform_id": self.platform_id,
                 "is_online": self._is_online,
                 "status_msg": self._status_msg,
                 "live_fps": self.live_fps,
+                "detector_fps": self.detector_fps or self.live_fps,
                 "live_latency_ms": self.live_latency_ms,
+                "stage_timings": self.stage_timings,
                 "synthetic_accuracy": self.synthetic_accuracy_label,
                 "train_state": self.train_state,
                 "ets_status": self.ets_status,
@@ -298,7 +328,7 @@ class LiveHub:
                 mtime = TELEMETRY_CACHE_PATH.stat().st_mtime
                 if (time.time() - mtime) < 4.0:
                     cached = json.loads(TELEMETRY_CACHE_PATH.read_text())
-                    for k in ["live_fps", "live_latency_ms", "train_state", "ets_status", "is_fallback", "source_target", "retry_status"]:
+                    for k in ["live_fps", "detector_fps", "live_latency_ms", "train_state", "ets_status", "is_fallback", "source_target", "retry_status"]:
                         if k in cached:
                             res[k] = cached[k]
                     res["is_online"] = True
@@ -310,6 +340,9 @@ class LiveHub:
     # ================= Events =================
     def push_event(self, event_record: Dict[str, Any]):
         """Publish a new incident event."""
+        if "session_id" not in event_record:
+            event_record["session_id"] = self.session_id
+
         with self._lock:
             self.events_history.appendleft(event_record)
             # Notify SSE listeners
@@ -326,21 +359,30 @@ class LiveHub:
         except Exception:
             pass
 
-    def get_events(self, limit: int = 50) -> List[Dict[str, Any]]:
+    def get_events(self, limit: int = 50, session_id: Optional[str] = None) -> List[Dict[str, Any]]:
         with self._lock:
-            in_mem = list(self.events_history)[:limit]
-            if in_mem:
-                return in_mem
+            in_mem = list(self.events_history)
+
+        if in_mem:
+            res = [ev for ev in in_mem if session_id is None or ev.get("session_id") == session_id]
+            return res[:limit]
 
         # Check disk cache if in-memory is empty
         if EVENTS_CACHE_PATH.exists():
             try:
                 lines = EVENTS_CACHE_PATH.read_text(encoding="utf-8").strip().splitlines()
                 disk_events = []
-                for line in reversed(lines[-limit:]):
+                for line in reversed(lines):
                     if line.strip():
-                        disk_events.append(json.loads(line))
-                return disk_events
+                        try:
+                            ev = json.loads(line)
+                            if "session_id" not in ev:
+                                ev["session_id"] = "LEGACY_SESSION"
+                            if session_id is None or ev.get("session_id") == session_id:
+                                disk_events.append(ev)
+                        except Exception:
+                            continue
+                return disk_events[:limit]
             except Exception:
                 pass
 
@@ -368,25 +410,77 @@ class LiveHub:
 
     # ================= Operator Controls =================
     def acknowledge_alarm(self) -> Dict[str, Any]:
-        """Operator pressed 'Acknowledge': silences buzzer and clears alert banner."""
+        """Operator pressed 'Acknowledge': silences buzzer, clears alert banner, and logs audit event."""
         with self._lock:
             if self.buzzer:
                 self.buzzer.acknowledge()
+            self._acknowledged = True
             self.active_alert = None
             logger.info("Alarm acknowledged by operator via dashboard.")
-            return {"status": "ok", "message": "Alarm acknowledged and buzzer silenced."}
+
+        self.push_event({
+            "id": f"ACK-{int(time.time()*1000)}",
+            "timestamp": time.time(),
+            "time_str": time.strftime("%H:%M:%S", time.localtime()),
+            "track_id": 0,
+            "event_type": "ALARM_ACKNOWLEDGED",
+            "zone": "platform",
+            "severity": "NORMAL",
+            "confidence": 0.99,
+            "action": "Operator acknowledged active alarms and silenced platform buzzer.",
+            "is_demo": False,
+            "session_id": self.session_id
+        })
+        return {"status": "ok", "message": "Alarm acknowledged and buzzer silenced."}
 
     def toggle_buzzer_mute(self) -> Dict[str, Any]:
-        if self.buzzer:
-            new_mute = self.buzzer.toggle_mute()
-            return {"status": "ok", "muted": new_mute}
-        return {"status": "error", "message": "Buzzer not initialized"}
+        """Toggle hardware buzzer mute state and publish state change event."""
+        with self._lock:
+            if self.buzzer:
+                new_mute = self.buzzer.toggle_mute()
+            else:
+                self._is_muted = not self._is_muted
+                new_mute = self._is_muted
+            self._is_muted = new_mute
+
+        self.push_event({
+            "id": f"MUTE-{int(time.time()*1000)}",
+            "timestamp": time.time(),
+            "time_str": time.strftime("%H:%M:%S", time.localtime()),
+            "track_id": 0,
+            "event_type": "BUZZER_MUTED" if new_mute else "BUZZER_UNMUTED",
+            "zone": "platform",
+            "severity": "L1",
+            "confidence": 0.99,
+            "action": f"Hardware buzzer mute state set to: {new_mute}",
+            "is_demo": False,
+            "session_id": self.session_id
+        })
+        return {"status": "ok", "muted": new_mute}
 
     def test_buzzer(self, pattern: str = "L2") -> Dict[str, Any]:
-        if self.buzzer:
-            self.buzzer.test_beep(pattern=pattern)
-            return {"status": "ok", "message": f"Test beep '{pattern}' dispatched."}
-        return {"status": "error", "message": "Buzzer not initialized"}
+        """Dispatch test buzzer audio pattern and publish test event to /api/events."""
+        pat = str(pattern).upper().strip()
+        with self._lock:
+            self._last_test_pattern = pat
+            self._last_test_time = time.time()
+            if self.buzzer:
+                self.buzzer.test_beep(pattern=pat)
+
+        self.push_event({
+            "id": f"TEST-{int(time.time()*1000)}",
+            "timestamp": time.time(),
+            "time_str": time.strftime("%H:%M:%S", time.localtime()),
+            "track_id": 0,
+            "event_type": f"BUZZER_TEST_{pat}",
+            "zone": "platform",
+            "severity": pat if pat in ["L1", "L2", "L3"] else "L1",
+            "confidence": 0.99,
+            "action": f"Manual test of buzzer {pat} dispatched by operator.",
+            "is_demo": False,
+            "session_id": self.session_id
+        })
+        return {"status": "ok", "message": f"Test beep '{pat}' dispatched.", "pattern": pat}
 
     def set_train_state(self, new_state: str) -> Dict[str, Any]:
         val = str(new_state).upper()
@@ -404,13 +498,41 @@ class LiveHub:
         with self._lock:
             self.ets_status = "ENGAGED"
             logger.warning("[SAFETY TRIP] Emergency Trip Switch manually engaged by Operator!")
-            return {"status": "ok", "ets_status": "ENGAGED"}
+
+        self.push_event({
+            "id": f"ETS-{int(time.time()*1000)}",
+            "timestamp": time.time(),
+            "time_str": time.strftime("%H:%M:%S", time.localtime()),
+            "track_id": 0,
+            "event_type": "ETS_MANUAL_TRIP",
+            "zone": "track_bed",
+            "severity": "L3",
+            "confidence": 0.99,
+            "action": "CRITICAL: Traction power cut manually engaged via Operator ETS trigger.",
+            "is_demo": False,
+            "session_id": self.session_id
+        })
+        return {"status": "ok", "ets_status": "ENGAGED"}
 
     def reset_ets(self) -> Dict[str, Any]:
         with self._lock:
             self.ets_status = "DISENGAGED"
             logger.info("[SAFETY TRIP] Emergency Trip Switch reset to DISENGAGED.")
-            return {"status": "ok", "ets_status": "DISENGAGED"}
+
+        self.push_event({
+            "id": f"ETS-RST-{int(time.time()*1000)}",
+            "timestamp": time.time(),
+            "time_str": time.strftime("%H:%M:%S", time.localtime()),
+            "track_id": 0,
+            "event_type": "ETS_RESET",
+            "zone": "platform",
+            "severity": "L1",
+            "confidence": 0.99,
+            "action": "Traction power interlock reset to DISENGAGED by operator.",
+            "is_demo": False,
+            "session_id": self.session_id
+        })
+        return {"status": "ok", "ets_status": "DISENGAGED"}
 
 
 # Global module singleton

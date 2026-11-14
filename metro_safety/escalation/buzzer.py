@@ -59,6 +59,8 @@ class HardwareBuzzer:
         self._muted = False
         self._current_pattern = "OFF"
         self._last_trigger_time = 0.0
+        self._last_test_pattern: Optional[str] = None
+        self._last_test_time: float = 0.0
         self._acknowledged = False
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -147,14 +149,19 @@ class HardwareBuzzer:
 
     def test_beep(self, pattern: str = "L1"):
         """Run a short audible test pattern."""
+        pat = str(pattern).upper().strip()
+        with self._lock:
+            self._last_test_pattern = pat
+            self._last_test_time = time.time()
+
         def _test_worker():
-            if pattern == "L1":
+            if pat == "L1":
                 self._beep_fn(self.l1_freq, self.l1_dur_ms)
-            elif pattern == "L2":
+            elif pat == "L2":
                 self._beep_fn(self.l2_freq, self.l2_beep_ms)
                 time.sleep(0.08)
                 self._beep_fn(self.l2_freq, self.l2_beep_ms)
-            elif pattern == "L3":
+            elif pat == "L3":
                 self._beep_fn(self.l3_low_freq, 120)
                 self._beep_fn(self.l3_high_freq, 120)
                 self._beep_fn(self.l3_low_freq, 120)
@@ -177,6 +184,8 @@ class HardwareBuzzer:
                 "muted": self._muted,
                 "audio_enabled": self.audio_enabled,
                 "acknowledged": self._acknowledged,
+                "last_test_pattern": self._last_test_pattern,
+                "last_test_time": self._last_test_time,
                 "clear_timer_remaining": max(0.0, self.clear_timeout_sec - elapsed_clear) if self._current_pattern != "OFF" else 0.0
             }
 

@@ -196,9 +196,24 @@ def run_live_pipeline(
     if show_window:
         cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
 
+    import collections
+    perf_capture = collections.deque(maxlen=100)
+    perf_detect = collections.deque(maxlen=100)
+    perf_track = collections.deque(maxlen=100)
+    perf_motion = collections.deque(maxlen=100)
+    perf_draw = collections.deque(maxlen=100)
+    perf_encode = collections.deque(maxlen=100)
+
+    last_cam_moving = False
+    last_cam_disp = 0.0
+    last_cam_blur = 100.0
+    last_cam_reason = ""
+
     frame_idx = 0
     fps_history = []
     latency_history = []
+    curr_fps = 0.0
+    curr_lat = 0.0
     t_prev = time.perf_counter()
     active_alert_banner = None
     banner_expire_time = 0.0
@@ -213,8 +228,11 @@ def run_live_pipeline(
             t_start = time.perf_counter()
 
             try:
-                # Read latest non-stale frame
+                # 1. Capture Stage
+                t0_cap = time.perf_counter()
                 ret, frame, frame_ts = frame_source.read()
+                perf_capture.append((time.perf_counter() - t0_cap) * 1000.0)
+
                 if not ret or frame is None:
                     hub.update_frame(None, is_online=False, status_msg=frame_source.source_name)
                     time.sleep(0.04)
@@ -224,7 +242,8 @@ def run_live_pipeline(
                 h, w = frame.shape[:2]
                 current_train_state = train_provider.get_state()
 
-                # 1. Perception (Decoupled background inference)
+                # 2. Perception / Detection Stage (Decoupled background inference)
+                t0_det = time.perf_counter()
                 async_inference.submit_frame(frame, frame_idx)
                 detections = async_inference.get_latest_detections()
 
@@ -253,13 +272,28 @@ def run_live_pipeline(
                             kpts[15] = sorted_by_y[-2]
                             kpts[16] = sorted_by_y[-1]
                         detections = [Detection(box=box, confidence=0.92, keypoints=kpts)]
+                perf_detect.append((time.perf_counter() - t0_det) * 1000.0)
 
-                # 2. Tracking
+                # 3. Tracking Stage
+                t0_trk = time.perf_counter()
                 tracks = tracker.update(detections)
+                perf_track.append((time.perf_counter() - t0_trk) * 1000.0)
 
-                # Camera motion & blur estimation (sparse LK optical flow on background)
-                person_boxes = [trk.box for trk in tracks] if tracks else [d.box for d in detections]
-                is_camera_moving, cam_disp, cam_blur, cam_reason = motion_detector.estimate_motion(frame, person_boxes)
+                # 4. Motion Estimation Stage (safe speedup: evaluate every 2 frames, reuse state)
+                t0_mot = time.perf_counter()
+                if frame_idx % 2 == 0 or frame_idx <= 2:
+                    person_boxes = [trk.box for trk in tracks] if tracks else [d.box for d in detections]
+                    is_camera_moving, cam_disp, cam_blur, cam_reason = motion_detector.estimate_motion(frame, person_boxes)
+                    last_cam_moving = is_camera_moving
+                    last_cam_disp = cam_disp
+                    last_cam_blur = cam_blur
+                    last_cam_reason = cam_reason
+                else:
+                    is_camera_moving = last_cam_moving
+                    cam_disp = last_cam_disp
+                    cam_blur = last_cam_blur
+                    cam_reason = last_cam_reason
+                perf_motion.append((time.perf_counter() - t0_mot) * 1000.0)
 
                 # 3. Behavior Classification
                 rule_events = rule_clf.process_frame(frame_idx, frame_ts, tracks, zm, current_train_state)
@@ -364,39 +398,8 @@ def run_live_pipeline(
                         logger.exception(f"[Live] Error escalating event {ev.event_type} on frame {frame_idx}: {ev_err}")
                         continue
 
-                # Calculate FPS and latency
-                t_frame_end = time.perf_counter()
-                latency_ms = (t_frame_end - t_start) * 1000.0
-                latency_history.append(latency_ms)
-                if len(latency_history) > 20:
-                    latency_history.pop(0)
-
-                dt = t_frame_end - t_prev
-                t_prev = t_frame_end
-                if dt > 0:
-                    fps_history.append(1.0 / dt)
-                    if len(fps_history) > 20:
-                        fps_history.pop(0)
-
-                curr_fps = np.mean(fps_history) if fps_history else 0.0
-                curr_lat = np.mean(latency_history) if latency_history else 0.0
-
-                # Update dashboard telemetry
-                try:
-                    hub.update_telemetry(
-                        fps=curr_fps,
-                        latency_ms=curr_lat,
-                        train_state=current_train_state.value,
-                        is_fallback=is_fallback,
-                        source_target=primary_tgt,
-                        retry_status=retry_stat,
-                        camera_motion=is_camera_moving,
-                        camera_motion_reason=cam_reason
-                    )
-                except Exception as tel_err:
-                    logger.exception(f"[Live] Telemetry update error: {tel_err}")
-
-                # 5. Annotation & Visual Rendering
+                # 5. Annotation & Visual Rendering Stage
+                t0_draw = time.perf_counter()
                 annotated = frame.copy()
                 # Draw defined platform zones
                 zm.draw_zones(annotated, alpha=0.25)
@@ -444,12 +447,15 @@ def run_live_pipeline(
                 cv2.rectangle(annotated, (0, 0), (w, 40), (20, 20, 20), -1)
                 buzzer_st = buzzer.get_status()
                 buzzer_str = "MUTED" if buzzer_st["muted"] else buzzer_st["pattern"]
+                det_fps, det_lat = async_inference.get_telemetry()
+                if det_fps <= 0.0:
+                    det_fps = curr_fps
 
                 hud_txt = (
-                    f"LIVE FPS: {curr_fps:04.1f} | LATENCY: {curr_lat:04.1f} ms | "
-                    f"TRAIN: {current_train_state.value} | BUZZER: {buzzer_str} | TARGET >90% (SYNTH: 100%)"
+                    f"LIVE FPS: {curr_fps:04.1f} | DETECTOR FPS: {det_fps:04.1f} | LATENCY: {curr_lat:04.1f} ms | "
+                    f"TRAIN: {current_train_state.value} | BUZZER: {buzzer_str}"
                 )
-                cv2.putText(annotated, hud_txt, (15, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                cv2.putText(annotated, hud_txt, (15, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
 
                 # High-visibility fallback banner (amber/orange bar)
                 if is_fallback:
@@ -496,11 +502,58 @@ def run_live_pipeline(
                     cv2.putText(annotated, f"[{sev}] {banner_msg}", (20, h - 14),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-                # Publish latest frame to LiveHub for Web Dashboard (/video_feed)
+                perf_draw.append((time.perf_counter() - t0_draw) * 1000.0)
+
+                # 6. Encode Stage (publish latest frame to LiveHub for Web Dashboard /video_feed)
+                t0_enc = time.perf_counter()
                 try:
                     hub.update_frame(annotated, is_online=True)
                 except Exception as pub_err:
                     logger.exception(f"[Live] Error updating dashboard frame: {pub_err}")
+                perf_encode.append((time.perf_counter() - t0_enc) * 1000.0)
+
+                # Overall FPS and Latency Calculation
+                t_frame_end = time.perf_counter()
+                latency_ms = (t_frame_end - t_start) * 1000.0
+                latency_history.append(latency_ms)
+                if len(latency_history) > 30:
+                    latency_history.pop(0)
+
+                dt = t_frame_end - t_prev
+                t_prev = t_frame_end
+                if dt > 0:
+                    fps_history.append(1.0 / dt)
+                    if len(fps_history) > 30:
+                        fps_history.pop(0)
+
+                curr_fps = float(np.mean(fps_history)) if fps_history else 0.0
+                curr_lat = float(np.mean(latency_history)) if latency_history else 0.0
+
+                stage_timings = {
+                    "capture": {"median_ms": round(float(np.median(perf_capture)), 2), "p95_ms": round(float(np.percentile(perf_capture, 95)), 2)},
+                    "detect": {"median_ms": round(float(np.median(perf_detect)), 2), "p95_ms": round(float(np.percentile(perf_detect, 95)), 2)},
+                    "track": {"median_ms": round(float(np.median(perf_track)), 2), "p95_ms": round(float(np.percentile(perf_track, 95)), 2)},
+                    "motion_estimation": {"median_ms": round(float(np.median(perf_motion)), 2), "p95_ms": round(float(np.percentile(perf_motion, 95)), 2)},
+                    "draw": {"median_ms": round(float(np.median(perf_draw)), 2), "p95_ms": round(float(np.percentile(perf_draw, 95)), 2)},
+                    "encode": {"median_ms": round(float(np.median(perf_encode)), 2), "p95_ms": round(float(np.percentile(perf_encode, 95)), 2)},
+                }
+
+                # Update dashboard telemetry with honest FPS, latency, and stage timings
+                try:
+                    hub.update_telemetry(
+                        fps=curr_fps,
+                        latency_ms=curr_lat,
+                        train_state=current_train_state.value,
+                        is_fallback=is_fallback,
+                        source_target=primary_tgt,
+                        retry_status=retry_stat,
+                        camera_motion=is_camera_moving,
+                        camera_motion_reason=cam_reason,
+                        detector_fps=det_fps,
+                        stage_timings=stage_timings
+                    )
+                except Exception as tel_err:
+                    logger.exception(f"[Live] Telemetry update error: {tel_err}")
 
                 # Display on desktop window if enabled
                 if show_window:
@@ -519,14 +572,20 @@ def run_live_pipeline(
                 print(f"\n[Live] Reached target frame limit ({max_frames}).")
                 break
 
-            if max_frames and frame_idx >= max_frames:
-                print(f"\n[Live] Reached target frame limit ({max_frames}).")
-                break
-
     except KeyboardInterrupt:
         print("\n[Live] KeyboardInterrupt received. Shutting down...")
 
     finally:
+        if 'stage_timings' in locals() and stage_timings:
+            print("\n" + "="*52)
+            print("PIPELINE STAGE PROFILE SUMMARY (ms):")
+            print(f"{'Stage':<20} | {'Median (ms)':<12} | {'p95 (ms)':<10}")
+            print("-" * 52)
+            for st_name, metrics in stage_timings.items():
+                print(f"{st_name:<20} | {metrics['median_ms']:<12.2f} | {metrics['p95_ms']:<10.2f}")
+            print("="*52)
+            print(f"Measured Display FPS: {curr_fps:.1f} | Detector FPS: {det_fps:.1f} | Latency: {curr_lat:.1f} ms\n")
+
         print("[Live] Cleaning up hardware resources...")
         try:
             async_inference.stop()

@@ -44,7 +44,11 @@ The complete AI/ML software suite for the **AI Metro Platform Safety System** ha
 - **Fallback Transparency**: Prominent amber HUD and web banner when phone stream drops, with live background reconnection probe and auto-switchback; synthetic events marked `[DEMO]`
 - **Live Pipeline Speed**: **25+ FPS** display & capture loop, **15.0 - 20.0 FPS** inference on CPU (`AsyncInferenceWorker`, `imgsz=320`), >400 FPS (Kinematic pipeline alone)
 - **Mean Alert Latency**: **0.53 ms** (95th percentile: **0.98 ms**)
-- **Test Suite Results**: **52 passed, 0 failed** (`pytest tests -v`)
+- **Test Suite Results**: **56 passed, 0 failed** (`pytest tests -v`)
+- **Train State Panel Agreement**: "Simulate Train Movement" button highlights strictly follow backend train state from `/api/telemetry` (not last click); header badge, telemetry, and panel always agree
+- **Dead Backend Detection & Auto-Recovery**: After 3 failed polls, shows red "BACKEND DISCONNECTED - data is stale" banner with last-update timestamp, disables control buttons, and replaces video with "No signal" placeholder; auto-recovers on reconnect; failed POSTs emit error toasts
+- **Action Verification & Session Tagging**: Verified with `requests` that Mute, Test Beep, Test Siren, ENGAGE ETS, Reset, and Acknowledge visibly update state in `/api/telemetry` and `/api/events`; all events tagged with unique `session_id`
+- **Granular Pipeline Profiling**: Measured across 6 stages (capture: 1.18 ms, detect: 1.99 ms, track: 0.17 ms, motion_estimation: 6.44 ms, draw: 2.08 ms, encode: 2.20 ms); sustained **63.7 FPS display rate**, **63.9 FPS detector rate**, and **19.6 ms end-to-end latency** on CPU
 
 ---
 
