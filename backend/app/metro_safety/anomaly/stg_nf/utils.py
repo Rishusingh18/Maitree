@@ -33,6 +33,6 @@ def split_feature(tensor, type="split", imgs=False):
             return tensor[:, 0::2, ...], tensor[:, 1::2, ...]
 
     if type == "split":
-        return tensor[:, : C // 2, ...].squeeze(dim=1), tensor[:, C // 2 :, ...].squeeze(dim=1)
+        return tensor[:, : C // 2, ...], tensor[:, C // 2 :, ...]
     elif type == "cross":
-        return tensor[:, 0::2, ...].squeeze(dim=1), tensor[:, 1::2, ...].squeeze(dim=1)
+        return tensor[:, 0::2, ...], tensor[:, 1::2, ...]

@@ -59,7 +59,8 @@ class AbandonedObjectDetector:
         alert_startup_objects: bool = False,
         confidence_thresh: float = 0.20,
         snapshot_dir: str = "data/snapshots",
-        yolo_model_name: str = "yolov8n.pt"
+        yolo_model_name: str = "yolov8n.pt",
+        object_detector: Optional[Any] = None
     ):
         self.detect_interval_frames = max(1, detect_interval_frames)
         self.unattended_radius_px = unattended_radius_px
@@ -70,12 +71,31 @@ class AbandonedObjectDetector:
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         self.yolo_model_name = yolo_model_name
 
-        self._obj_detector = None
+        self._obj_detector = object_detector
         self._obj_counter = 0
         self.tracked_objects: Dict[int, TrackedObject] = {}
         self.cached_raw_detections: List[Dict[str, Any]] = []
+        self._last_inference_frame: int = -1
+        self._last_inference_ts: float = 0.0
 
-        self._init_detector()
+        if self._obj_detector is None:
+            self._init_detector()
+
+    @property
+    def yolo_model(self):
+        return self._obj_detector
+
+    @yolo_model.setter
+    def yolo_model(self, model):
+        self._obj_detector = model
+
+    @property
+    def object_detector(self):
+        return self._obj_detector
+
+    @object_detector.setter
+    def object_detector(self, model):
+        self._obj_detector = model
 
     def _init_detector(self):
         try:
@@ -88,13 +108,26 @@ class AbandonedObjectDetector:
         self._obj_counter += 1
         return self._obj_counter
 
-    def detect_objects_in_frame(self, frame: np.ndarray, frame_idx: int) -> List[Dict[str, Any]]:
-        """Run bag detection at decimated interval."""
-        if frame_idx % self.detect_interval_frames != 0 and self.cached_raw_detections:
-            return self.cached_raw_detections
+    def detect_objects_in_frame(self, frame: Optional[np.ndarray], frame_idx: int, timestamp: Optional[float] = None) -> Tuple[List[Dict[str, Any]], bool]:
+        """Run bag detection at decimated interval.
+        Returns:
+            (detections, is_fresh)
+        """
+        now = timestamp if timestamp is not None else time.time()
+        # Bound cached detection reuse: expire after 2.5s
+        if self._last_inference_ts > 0 and (now - self._last_inference_ts) > 2.5:
+            self.cached_raw_detections = []
+
+        should_run = (self._last_inference_frame < 0) or ((frame_idx - self._last_inference_frame) >= self.detect_interval_frames)
+
+        if not should_run:
+            return list(self.cached_raw_detections), False
+
+        self._last_inference_frame = frame_idx
+        self._last_inference_ts = now
 
         if self._obj_detector is None or frame is None or frame.size == 0:
-            return self.cached_raw_detections
+            return list(self.cached_raw_detections), False
 
         try:
             results = self._obj_detector(
@@ -120,15 +153,16 @@ class AbandonedObjectDetector:
                             "class": cname
                         })
             self.cached_raw_detections = raw
-            return raw
+            return raw, True
         except Exception:
-            return self.cached_raw_detections
+            return list(self.cached_raw_detections), False
 
     def update_objects(
         self,
         raw_detections: List[Dict[str, Any]],
         timestamp: float,
-        zone_manager: ZoneManager
+        zone_manager: ZoneManager,
+        is_fresh: bool = True
     ):
         """Associate detections with existing tracked objects."""
         matched_obj_ids = set()
@@ -139,12 +173,17 @@ class AbandonedObjectDetector:
             cy = float((bx[1] + bx[3]) / 2.0)
 
             best_id = None
-            best_dist = 60.0  # spatial threshold for same bag
+            min_dist = float("inf")
 
             for oid, tobj in self.tracked_objects.items():
+                if oid in matched_obj_ids:
+                    continue
+                dt = max(0.01, timestamp - tobj.last_seen_ts)
+                # Dynamic matching radius accounting for elapsed time and velocity
+                match_radius = max(60.0, min(200.0, 60.0 + tobj.velocity * dt * 1.5))
                 d = math.hypot(cx - tobj.center[0], cy - tobj.center[1])
-                if d < best_dist and oid not in matched_obj_ids:
-                    best_dist = d
+                if d < match_radius and d < min_dist:
+                    min_dist = d
                     best_id = oid
 
             zone = zone_manager.get_zone_for_point((cx, cy))
@@ -154,15 +193,16 @@ class AbandonedObjectDetector:
                 tobj = self.tracked_objects[best_id]
                 dt = max(0.01, timestamp - tobj.last_seen_ts)
                 dist = math.hypot(cx - tobj.center[0], cy - tobj.center[1])
-                tobj.velocity = round(dist / dt, 2)
+                if is_fresh:
+                    tobj.velocity = round(dist / dt, 2)
+                    tobj.last_seen_ts = timestamp
+                    tobj.positions.append((cx, cy, timestamp))
+                    if len(tobj.positions) > 30:
+                        tobj.positions.pop(0)
                 tobj.box = bx.copy()
                 tobj.center = (cx, cy)
                 tobj.confidence = det["conf"]
-                tobj.last_seen_ts = timestamp
                 tobj.zone = zone
-                tobj.positions.append((cx, cy, timestamp))
-                if len(tobj.positions) > 30:
-                    tobj.positions.pop(0)
                 matched_obj_ids.add(best_id)
             else:
                 # New bag
@@ -200,10 +240,11 @@ class AbandonedObjectDetector:
 
         if synthetic_objects is not None:
             raw_objs = synthetic_objects
+            is_fresh = True
         else:
-            raw_objs = self.detect_objects_in_frame(frame, frame_idx)
+            raw_objs, is_fresh = self.detect_objects_in_frame(frame, frame_idx, timestamp)
 
-        self.update_objects(raw_objs, timestamp, zone_manager)
+        self.update_objects(raw_objs, timestamp, zone_manager, is_fresh=is_fresh)
 
         # Person positions
         person_anchors = []
@@ -250,6 +291,13 @@ class AbandonedObjectDetector:
                 # No person nearby: bag is unattended
                 if not obj.owner_seen_near and not self.alert_startup_objects:
                     # Ignore bags present at startup that never had an owner near them
+                    continue
+
+                # Stationary dwell check: require velocity <= 15.0 px/s (movement pauses/resets dwell)
+                if obj.velocity > 15.0:
+                    obj.unattended_start_ts = timestamp
+                    obj.unattended_duration = 0.0
+                    obj.is_unattended = False
                     continue
 
                 if not obj.is_unattended:

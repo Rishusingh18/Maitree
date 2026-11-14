@@ -59,7 +59,12 @@ class LoiteringDetector:
         # Check train suppression: if train is approaching or present/docked, loitering is suppressed
         effective_ts = str(train_state).upper()
         if self.train_suppression and effective_ts in ["APPROACHING", "PRESENT", "DOCKED", "ARRIVING"]:
-            # Suppress loitering alerts during active train presence
+            # Pause/reset dwell timer during train suppression so post-departure does not immediately fire
+            for tid, st in self.track_states.items():
+                st.anchor_start_ts = timestamp
+                st.dwell_duration = 0.0
+                st.l1_alerted = False
+                st.l2_alerted = False
             return events
 
         for det in tracked_dets:
@@ -106,54 +111,54 @@ class LoiteringDetector:
                 st.dwell_duration = round(timestamp - st.anchor_start_ts, 1)
 
                 if st.dwell_duration >= self.dwell_t2_sec:
-                    # L2 Loitering Security Alert
-                    ev = SafetyEvent(
-                        event_type=EventType.LOITERING,
-                        confidence=min(0.95, 0.82 + 0.05 * min(2.0, st.dwell_duration / 120.0)),
-                        track_id=tid,
-                        timestamp=timestamp,
-                        zone=zone,
-                        train_state=effective_ts,
-                        evidence_frames=[frame_idx],
-                        metadata={
-                            "duration_sec": st.dwell_duration,
-                            "dwell_time_sec": st.dwell_duration,
-                            "dwell_radius_px": self.radius_px,
-                            "displacement_px": round(dist_from_anchor, 1),
-                            "severity_code": "L2",
-                            "severity_cap": "L2",
-                            "disclaimer": "operator welfare review",
-                            "action": f"SECURITY ALERT: Loitering in {zone} for {st.dwell_duration}s without train. Operator review."
-                        }
-                    )
-                    ev.is_anomaly = True
-                    st.l2_alerted = True
-                    events.append(ev)
+                    if not st.l2_alerted:
+                        # L2 Loitering Security Alert
+                        ev = SafetyEvent(
+                            event_type=EventType.LOITERING,
+                            confidence=min(0.95, 0.82 + 0.05 * min(2.0, st.dwell_duration / 120.0)),
+                            track_id=tid,
+                            timestamp=timestamp,
+                            zone=zone,
+                            train_state=effective_ts,
+                            evidence_frames=[frame_idx],
+                            metadata={
+                                "duration_sec": st.dwell_duration,
+                                "dwell_radius_px": self.radius_px,
+                                "displacement_px": round(dist_from_anchor, 1),
+                                "severity_cap": "L2",
+                                "severity_code": "L2",
+                                "disclaimer": "operator welfare review",
+                                "action": f"SECURITY ALERT: Loitering in {zone} for {st.dwell_duration}s without train. Operator review."
+                            }
+                        )
+                        ev.is_anomaly = True
+                        st.l2_alerted = True
+                        events.append(ev)
 
                 elif st.dwell_duration >= self.dwell_t1_sec:
-                    # L1 Loitering Notice
-                    ev = SafetyEvent(
-                        event_type=EventType.LOITERING,
-                        confidence=0.80,
-                        track_id=tid,
-                        timestamp=timestamp,
-                        zone=zone,
-                        train_state=effective_ts,
-                        evidence_frames=[frame_idx],
-                        metadata={
-                            "duration_sec": st.dwell_duration,
-                            "dwell_time_sec": st.dwell_duration,
-                            "dwell_radius_px": self.radius_px,
-                            "displacement_px": round(dist_from_anchor, 1),
-                            "severity_code": "L1",
-                            "severity_cap": "L1",
-                            "disclaimer": "operator welfare review",
-                            "action": f"SECURITY NOTICE: Extended dwell in {zone} ({st.dwell_duration}s)."
-                        }
-                    )
-                    ev.is_anomaly = True
-                    st.l1_alerted = True
-                    events.append(ev)
+                    if not st.l1_alerted:
+                        # L1 Loitering Notice
+                        ev = SafetyEvent(
+                            event_type=EventType.LOITERING,
+                            confidence=0.80,
+                            track_id=tid,
+                            timestamp=timestamp,
+                            zone=zone,
+                            train_state=effective_ts,
+                            evidence_frames=[frame_idx],
+                            metadata={
+                                "duration_sec": st.dwell_duration,
+                                "dwell_radius_px": self.radius_px,
+                                "displacement_px": round(dist_from_anchor, 1),
+                                "severity_cap": "L1",
+                                "severity_code": "L1",
+                                "disclaimer": "operator welfare review",
+                                "action": f"SECURITY NOTICE: Extended dwell in {zone} ({st.dwell_duration}s)."
+                            }
+                        )
+                        ev.is_anomaly = True
+                        st.l1_alerted = True
+                        events.append(ev)
 
             else:
                 # Person walked away: update anchor to new position and reset dwell timer
@@ -169,3 +174,4 @@ class LoiteringDetector:
             del self.track_states[dead_id]
 
         return events
+

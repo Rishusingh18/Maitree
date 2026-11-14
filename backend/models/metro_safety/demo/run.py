@@ -61,6 +61,14 @@ def run_pipeline(
     else:
         resolved_source = cfg["system"].get("source", "http://192.168.1.32:8080/video")
 
+    alias_map = {
+        "fall": "demo_clips/demo_fall.mp4",
+        "jump": "demo_clips/demo_jump.mp4",
+        "distress": "demo_clips/demo_distress.mp4"
+    }
+    if str(resolved_source).lower() in alias_map:
+        resolved_source = alias_map[str(resolved_source).lower()]
+
     zm = ZoneManager(cfg["zones"])
     zone_tracker = AdaptiveZoneTracker(
         zone_manager=zm,
@@ -155,7 +163,9 @@ def run_pipeline(
         )
         print(f"[Pipeline] Loaded YOLO pose detector ({cfg['perception']['model_name']})")
         if hasattr(pose_detector, "_model") and pose_detector._model is not None:
-            anomaly_engine.set_object_detector(pose_detector._model)
+            names = getattr(pose_detector._model, "names", {})
+            if any(cls_name in names.values() for cls_name in ["backpack", "handbag", "suitcase"]):
+                anomaly_engine.set_object_detector(pose_detector._model)
     except Exception as e:
         print(f"[Pipeline] [Notice] YOLO model load failed ({e}), using synthetic detection tracker.")
 
@@ -265,8 +275,9 @@ def run_pipeline(
             frame_zones_unverified = reg_result.zones_unverified
 
             # 3. Behavior Events, Gestures & Anomaly Detection
-            rule_evs = rule_clf.process_frame(frame_idx, frame_ts, tracked_dets, zm, train_state)
-            gest_evs = gesture_det.process_frame(frame_idx, frame_ts, tracked_dets, zm, train_state)
+            current_train_state = hub.train_state_provider.get_state() if hasattr(hub, "train_state_provider") and hub.train_state_provider else train_state
+            rule_evs = rule_clf.process_frame(frame_idx, frame_ts, tracked_dets, zm, current_train_state)
+            gest_evs = gesture_det.process_frame(frame_idx, frame_ts, tracked_dets, zm, current_train_state)
             cam_moving = getattr(rule_clf, "camera_moving", False)
             cam_reason = getattr(rule_clf, "motion_reason", "Optical flow vibration")
             anom_evs = anomaly_engine.process_frame(
@@ -275,7 +286,7 @@ def run_pipeline(
                 person_detections=tracked_dets,
                 zone_manager=zm,
                 timestamp=frame_ts,
-                train_state=train_state.value if hasattr(train_state, "value") else str(train_state),
+                train_state=current_train_state.value if hasattr(current_train_state, "value") else str(current_train_state),
                 camera_motion=cam_moving,
                 motion_reason=cam_reason,
                 zones_unverified=frame_zones_unverified,

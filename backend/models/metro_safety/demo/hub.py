@@ -711,20 +711,23 @@ class LiveHub:
             return {"status": "ok" if success else "error", "message": msg}
 
         # Check cross-process IPC file if producer is running in separate process
+        import uuid
+        req_id = uuid.uuid4().hex
         cmd_path = Path("data/cache/zone_confirm.cmd")
         resp_path = Path("data/cache/zone_confirm.resp")
         try:
             cmd_path.parent.mkdir(parents=True, exist_ok=True)
             if resp_path.exists():
                 resp_path.unlink()
-            cmd_path.write_text(str(time.time()), encoding="utf-8")
-            for _ in range(20):
+            cmd_path.write_text(json.dumps({"req_id": req_id, "timestamp": time.time()}), encoding="utf-8")
+            for _ in range(25):
                 time.sleep(0.05)
                 if resp_path.exists():
                     try:
                         res = json.loads(resp_path.read_text(encoding="utf-8"))
-                        resp_path.unlink()
-                        return res
+                        if res.get("req_id") == req_id:
+                            resp_path.unlink()
+                            return {"status": res.get("status", "ok"), "message": res.get("message", "")}
                     except Exception:
                         pass
         except Exception as _e:

@@ -129,6 +129,21 @@ class TheftSnatchDetector:
         now = timestamp if timestamp is not None else time.time()
         events: List[SafetyEvent] = []
 
+        active_bag_ids = {bag.object_id for bag in tracked_bags}
+        # Clean up state for departed bags
+        for bid in list(self.bag_owner_links.keys()):
+            if bid not in active_bag_ids:
+                del self.bag_owner_links[bid]
+        for bid in list(self.confirmed_owners.keys()):
+            if bid not in active_bag_ids:
+                del self.confirmed_owners[bid]
+        for bid in list(self.object_velocity_history.keys()):
+            if bid not in active_bag_ids:
+                del self.object_velocity_history[bid]
+        for bid in list(self.candidates.keys()):
+            if bid not in active_bag_ids:
+                del self.candidates[bid]
+
         person_map: Dict[int, Detection] = {d.track_id: d for d in person_detections if d.track_id is not None}
         person_centers: Dict[int, Tuple[float, float]] = {
             t_id: (float((d.box[0] + d.box[2]) / 2.0), float((d.box[1] + d.box[3]) / 2.0))
@@ -185,6 +200,9 @@ class TheftSnatchDetector:
                             link.confirmed_owner = True
                             if bid not in self.confirmed_owners:
                                 self.confirmed_owners[bid] = pid
+                else:
+                    if pid in links and not links[pid].confirmed_owner:
+                        links[pid].proximity_frames = 0
 
         # 3. Detect snatch attempts
         for bag in tracked_bags:
@@ -195,7 +213,10 @@ class TheftSnatchDetector:
             # Check existing candidate for this bag
             if bid in self.candidates:
                 cand = self.candidates[bid]
+                elapsed = now - cand.approach_ts
                 if cand.alerted:
+                    if elapsed > self.owner_follow_sec + 2.0:
+                        del self.candidates[bid]
                     continue
 
                 # Check bag acceleration
@@ -259,7 +280,7 @@ class TheftSnatchDetector:
                 # 2. Window elapsed >= 0.4s and <= owner_follow_sec
                 # 3. Victim did NOT follow
                 if (cand.acceleration_detected or bag_displacement > 40.0) and not victim_followed:
-                    if elapsed >= 0.4:
+                    if elapsed >= min(self.owner_follow_sec, 0.5):
                         # Candidate confirmed as POSSIBLE_SNATCH
                         cand.alerted = True
 

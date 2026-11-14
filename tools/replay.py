@@ -175,7 +175,9 @@ def main():
 
     anomaly_engine = AnomalyEngine(cfg)
     if pose_detector and hasattr(pose_detector, "_model") and pose_detector._model is not None:
-        anomaly_engine.set_object_detector(pose_detector._model)
+        names = getattr(pose_detector._model, "names", {})
+        if any(cls_name in names.values() for cls_name in ["backpack", "handbag", "suitcase"]):
+            anomaly_engine.set_object_detector(pose_detector._model)
 
     rule_clf = RuleBasedEventClassifier(
         line_crossing_thresh=cfg["events"]["line_crossing_consecutive_frames"],

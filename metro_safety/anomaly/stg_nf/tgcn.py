@@ -34,21 +34,23 @@ class InvConvTemporalGraphical(nn.Module):
         if not reverse:
             x, dlogdet = self.conv(x, logdetA, reverse)
             n, kc, t, v = x.size()
-            x = x.view(n, self.kernel_size, kc // self.kernel_size, t, v)
-            x_test = x.permute(0, 2, 3, 1, 4).reshape(n, kc // self.kernel_size, t, -1)
+            x_view = x.view(n, self.kernel_size, kc // self.kernel_size, t, v)
+            x_test = x_view.permute(0, 2, 3, 1, 4).reshape(n, kc // self.kernel_size, t, -1)
             a_test = A.reshape(-1, v)
-            x = torch.cat((x[:, 0], x_test @ a_test), dim=1).reshape(x.shape)
+            x_out = torch.cat((x_view[:, 0], x_test @ a_test), dim=1).reshape(n, kc, t, v)
             if logdet is not None:
-                logdet = logdet + logdetA[1]
-                return x, logdet
-            return x, dlogdet + logdetA[1]
+                logdet = logdet + dlogdet + logdetA[1]
+                return x_out, logdet
+            return x_out, dlogdet + logdetA[1]
         else:
             a1_inverse = A[1].inverse()
-            x0 = x[:, 0]
-            x1 = (x[:, 1] - (x0 @ A[0])) @ a1_inverse
-            x_rev = torch.cat((x0, x1), dim=1).reshape(x.shape)
-            z, dlogdet = self.conv2d(x_rev, logdetA, reverse)
+            n, kc, t, v = x.size()
+            x_view = x.view(n, self.kernel_size, kc // self.kernel_size, t, v)
+            x0 = x_view[:, 0]
+            x1 = (x_view[:, 1] - (x0 @ A[0])) @ a1_inverse
+            x_rev = torch.cat((x0, x1), dim=1).reshape(n, kc, t, v)
+            z, dlogdet = self.conv(x_rev, logdetA, reverse)
             if logdet is not None:
-                logdet = logdet - logdetA[1]
+                logdet = logdet + dlogdet - logdetA[1]
                 return z, logdet
             return z, dlogdet - logdetA[1]

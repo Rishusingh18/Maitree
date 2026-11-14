@@ -3,7 +3,10 @@ from metro_safety.anomaly.person_down import PersonDownDetector
 from metro_safety.anomaly.loitering import LoiteringDetector
 from metro_safety.anomaly.abandoned_object import AbandonedObjectDetector, TrackedObject
 from metro_safety.anomaly.theft_snatch import TheftSnatchDetector
-from metro_safety.anomaly.stg_nf_evaluator import STGNFEvaluator
+try:
+    from metro_safety.anomaly.stg_nf_evaluator import STGNFEvaluator
+except (ImportError, Exception):
+    STGNFEvaluator = None
 from metro_safety.anomaly.engine import AnomalyEngine
 
 __all__ = [

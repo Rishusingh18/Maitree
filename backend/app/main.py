@@ -150,7 +150,7 @@ async def api_train_state(request: Request, authorized: bool = Depends(get_api_k
 def get_snapshot():
     """Return single JPEG snapshot of current camera feed."""
     hub = get_global_hub()
-    frame_bytes = hub.get_jpeg_frame()
+    frame_bytes = hub.get_latest_jpeg()
     if not frame_bytes:
         return Response(content=b"", status_code=503)
     return Response(content=frame_bytes, media_type="image/jpeg")

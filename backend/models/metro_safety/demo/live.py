@@ -251,6 +251,9 @@ def run_live_pipeline(
                 perf_capture.append((time.perf_counter() - t0_cap) * 1000.0)
 
                 if not ret or frame is None:
+                    if hasattr(frame_source, "loop") and not frame_source.loop:
+                        print(f"[Live] Video file reached EOF after {frame_idx} frames. Stopping.")
+                        break
                     hub.update_frame(None, is_online=False, status_msg=frame_source.source_name)
                     time.sleep(0.04)
                     continue
@@ -312,42 +315,7 @@ def run_live_pipeline(
                     cam_reason = last_cam_reason
                 perf_motion.append((time.perf_counter() - t0_mot) * 1000.0)
 
-                # 3. Behavior Classification & Anomaly Detection
-                rule_events = rule_clf.process_frame(frame_idx, frame_ts, tracks, zm, current_train_state)
-                learned_events = learned_clf.process_frame(frame_idx, frame_ts, tracks, zm, current_train_state)
-                gesture_events = gesture_det.process_frame(frame_idx, frame_ts, tracks, zm, current_train_state)
-                anomaly_events = anomaly_engine.process_frame(
-                    frame=frame,
-                    frame_idx=frame_idx,
-                    person_detections=tracks,
-                    zone_manager=zm,
-                    timestamp=frame_ts,
-                    train_state=current_train_state.value if hasattr(current_train_state, "value") else str(current_train_state),
-                    camera_motion=is_camera_moving,
-                    motion_reason=cam_reason,
-                    zones_unverified=False,
-                    zone_version=zm.zone_version
-                )
-                all_events = rule_events + learned_events + gesture_events + anomaly_events
-
-                # Tag events with camera motion status for escalation gating
-                for ev in all_events:
-                    ev.camera_motion = is_camera_moving
-                    ev.motion_reason = cam_reason
-
-                # Check active intrusion in danger zones for buzzer clear-timeout
-                has_intrusion = False
-                for trk in tracks:
-                    zone = zm.get_zone_for_point(trk.foot_anchor)
-                    if zone in ["yellow_band", "track_bed", "danger_zone"]:
-                        has_intrusion = True
-                        break
-                try:
-                    buzzer.update_clear_status(has_intrusion)
-                except Exception as b_err:
-                    logger.exception(f"[Live] Error updating buzzer clear status: {b_err}")
-
-                # 4. Closed-Loop Escalation, Buzzer & Overlooker Notifications (Per-event isolation)
+                # 3. Adaptive Zone Tracking (Non-blocking frame registration)
                 is_fallback = getattr(frame_source, "is_fallback", False)
                 primary_tgt = getattr(frame_source, "primary_target", resolved_source)
                 retry_stat = getattr(frame_source, "retry_status", "Active")
@@ -373,9 +341,42 @@ def run_live_pipeline(
                 frame_zone_version = zm.zone_version
                 frame_zones_unverified = reg_result.zones_unverified
 
+                # 4. Behavior Classification & Anomaly Detection
+                rule_events = rule_clf.process_frame(frame_idx, frame_ts, tracks, zm, current_train_state)
+                learned_events = learned_clf.process_frame(frame_idx, frame_ts, tracks, zm, current_train_state)
+                gesture_events = gesture_det.process_frame(frame_idx, frame_ts, tracks, zm, current_train_state)
+                anomaly_events = anomaly_engine.process_frame(
+                    frame=frame,
+                    frame_idx=frame_idx,
+                    person_detections=tracks,
+                    zone_manager=zm,
+                    timestamp=frame_ts,
+                    train_state=current_train_state.value if hasattr(current_train_state, "value") else str(current_train_state),
+                    camera_motion=is_camera_moving,
+                    motion_reason=cam_reason,
+                    zones_unverified=frame_zones_unverified,
+                    zone_version=frame_zone_version
+                )
+                all_events = rule_events + learned_events + gesture_events + anomaly_events
+
+                # Tag events with camera motion and geometry status for escalation gating
                 for ev in all_events:
+                    ev.camera_motion = is_camera_moving
+                    ev.motion_reason = cam_reason
                     ev.zones_unverified = frame_zones_unverified
                     ev.zone_version = frame_zone_version
+
+                # Check active intrusion in danger zones for buzzer clear-timeout
+                has_intrusion = False
+                for trk in tracks:
+                    zone = zm.get_zone_for_point(trk.foot_anchor)
+                    if zone in ["yellow_band", "track_bed", "danger_zone"]:
+                        has_intrusion = True
+                        break
+                try:
+                    buzzer.update_clear_status(has_intrusion)
+                except Exception as b_err:
+                    logger.exception(f"[Live] Error updating buzzer clear status: {b_err}")
 
                 for ev in all_events:
                     try:

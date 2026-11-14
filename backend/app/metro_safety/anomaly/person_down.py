@@ -129,20 +129,44 @@ class PersonDownDetector:
         """Evaluate tracked persons for sustained unresponsive prone states."""
         events: List[SafetyEvent] = []
         active_falls = active_falls_map or {}
-        current_tids = set()
+        incoming_tids = {det.track_id for det in tracked_dets if det.track_id}
+
+        # Pre-retire missing tracks into dormant_states so newly assigned track IDs
+        # in this exact same frame can re-associate immediately
+        dead_tids = [t for t in self.track_states if t not in incoming_tids]
+        for dead_id in dead_tids:
+            st = self.track_states[dead_id]
+            if st.is_currently_prone and (timestamp - st.last_seen_ts) <= self.track_reassoc_window_sec:
+                self.dormant_states.append({
+                    "last_pos": st.last_position,
+                    "first_prone_ts": st.first_prone_ts,
+                    "last_seen_ts": st.last_seen_ts,
+                    "linked_fall_id": st.linked_fall_id,
+                    "l1_alerted": st.l1_alerted,
+                    "l2_alerted": st.l2_alerted
+                })
+            del self.track_states[dead_id]
+
+        # Clean old dormant states
+        self.dormant_states = [d for d in self.dormant_states if (timestamp - d["last_seen_ts"]) <= self.track_reassoc_window_sec]
 
         for det in tracked_dets:
             tid = det.track_id or 0
             if tid == 0:
                 continue
-            current_tids.add(tid)
 
             foot = det.foot_anchor
             zone = zone_manager.get_zone_for_point(foot)
 
             # Check bench/seating ignore zone
             if zone == "ignore" and self.ignore_bench_lying:
-                # Normal seating/bench lying ignored if configured
+                if tid in self.track_states:
+                    st = self.track_states[tid]
+                    st.is_currently_prone = False
+                    st.first_prone_ts = timestamp
+                    st.prone_duration = 0.0
+                    st.l1_alerted = False
+                    st.l2_alerted = False
                 continue
 
             # Check track state or re-associate churned track
@@ -197,15 +221,15 @@ class PersonDownDetector:
             if len(state.recent_torso_pts) > 30:
                 state.recent_torso_pts.pop(0)
 
-            # Compute motion velocity over recent 1.0 second
+            # Compute motion velocity over recent 1.5 seconds summing consecutive path displacements
             recent_window = [p for p in state.recent_torso_pts if (timestamp - p[2]) <= 1.5]
             if len(recent_window) >= 2:
                 dt = max(0.1, recent_window[-1][2] - recent_window[0][2])
-                dist = math.hypot(
-                    recent_window[-1][0] - recent_window[0][0],
-                    recent_window[-1][1] - recent_window[0][1]
+                path_dist = sum(
+                    math.hypot(recent_window[k + 1][0] - recent_window[k][0], recent_window[k + 1][1] - recent_window[k][1])
+                    for k in range(len(recent_window) - 1)
                 )
-                state.motion_energy = round(dist / dt, 2)
+                state.motion_energy = round(path_dist / dt, 2)
             else:
                 state.motion_energy = 0.0
 
@@ -225,61 +249,61 @@ class PersonDownDetector:
                 state.prone_duration = round(timestamp - state.first_prone_ts, 1)
 
                 # Check escalation timers: T1 -> L1, T2 -> L2
-                if state.prone_duration >= self.prone_t2_sec and not state.l2_alerted:
-                    # L2 Welfare Alert
-                    ev = SafetyEvent(
-                        event_type=EventType.PERSON_DOWN,
-                        confidence=min(0.96, 0.85 + 0.05 * min(2.0, state.prone_duration / 60.0)),
-                        track_id=tid,
-                        timestamp=timestamp,
-                        zone=zone,
-                        train_state=train_state,
-                        evidence_frames=[frame_idx],
-                        metadata={
-                            "duration_sec": state.prone_duration,
-                            "prone_duration_sec": state.prone_duration,
-                            "torso_angle": state.torso_angle,
-                            "aspect_ratio": state.aspect_ratio,
-                            "motion_energy": state.motion_energy,
-                            "severity_code": "L2",
-                            "severity_cap": "L2",
-                            "disclaimer": "operator welfare review",
-                            "linked_fall_id": state.linked_fall_id,
-                            "welfare_alert": "Possible medical emergency - person unresponsive"
-                        }
-                    )
-                    ev.is_anomaly = True
-                    ev.linked_fall_id = state.linked_fall_id
-                    state.l2_alerted = True
-                    events.append(ev)
+                if state.prone_duration >= self.prone_t2_sec:
+                    if not state.l2_alerted:
+                        # L2 Welfare Alert
+                        ev = SafetyEvent(
+                            event_type=EventType.PERSON_DOWN,
+                            confidence=min(0.96, 0.85 + 0.05 * min(2.0, state.prone_duration / 60.0)),
+                            track_id=tid,
+                            timestamp=timestamp,
+                            zone=zone,
+                            train_state=train_state,
+                            evidence_frames=[frame_idx],
+                            metadata={
+                                "duration_sec": state.prone_duration,
+                                "torso_angle": state.torso_angle,
+                                "aspect_ratio": state.aspect_ratio,
+                                "motion_energy": state.motion_energy,
+                                "severity_cap": "L2",
+                                "severity_code": "L2",
+                                "disclaimer": "operator welfare review",
+                                "linked_fall_id": state.linked_fall_id,
+                                "welfare_alert": "Possible medical emergency - person unresponsive"
+                            }
+                        )
+                        ev.is_anomaly = True
+                        ev.linked_fall_id = state.linked_fall_id
+                        state.l2_alerted = True
+                        events.append(ev)
 
-                elif state.prone_duration >= self.prone_t1_sec and not state.l1_alerted:
-                    # L1 Dashboard Notice
-                    ev = SafetyEvent(
-                        event_type=EventType.PERSON_DOWN,
-                        confidence=0.85,
-                        track_id=tid,
-                        timestamp=timestamp,
-                        zone=zone,
-                        train_state=train_state,
-                        evidence_frames=[frame_idx],
-                        metadata={
-                            "duration_sec": state.prone_duration,
-                            "prone_duration_sec": state.prone_duration,
-                            "torso_angle": state.torso_angle,
-                            "aspect_ratio": state.aspect_ratio,
-                            "motion_energy": state.motion_energy,
-                            "severity_code": "L1",
-                            "severity_cap": "L1",
-                            "disclaimer": "operator welfare review",
-                            "linked_fall_id": state.linked_fall_id,
-                            "welfare_alert": "Person motionless on floor - monitoring"
-                        }
-                    )
-                    ev.is_anomaly = True
-                    ev.linked_fall_id = state.linked_fall_id
-                    state.l1_alerted = True
-                    events.append(ev)
+                elif state.prone_duration >= self.prone_t1_sec:
+                    if not state.l1_alerted:
+                        # L1 Dashboard Notice
+                        ev = SafetyEvent(
+                            event_type=EventType.PERSON_DOWN,
+                            confidence=0.85,
+                            track_id=tid,
+                            timestamp=timestamp,
+                            zone=zone,
+                            train_state=train_state,
+                            evidence_frames=[frame_idx],
+                            metadata={
+                                "duration_sec": state.prone_duration,
+                                "torso_angle": state.torso_angle,
+                                "aspect_ratio": state.aspect_ratio,
+                                "motion_energy": state.motion_energy,
+                                "severity_cap": "L1",
+                                "severity_code": "L1",
+                                "disclaimer": "operator welfare review",
+                                "linked_fall_id": state.linked_fall_id,
+                                "welfare_alert": "Person motionless on floor - monitoring"
+                            }
+                        )
+                        ev.is_anomaly = True
+                        ev.linked_fall_id = state.linked_fall_id
+                        state.l1_alerted = True
+                        events.append(ev)
 
             else:
                 # Person has stood up or resumed active motion: reset prone state
@@ -289,22 +313,5 @@ class PersonDownDetector:
                 state.l1_alerted = False
                 state.l2_alerted = False
 
-        # Prune dead tracks and save dormant state for re-association
-        dead_tids = [tid for tid in self.track_states if tid not in current_tids]
-        for dead_id in dead_tids:
-            st = self.track_states[dead_id]
-            if st.is_currently_prone and (timestamp - st.last_seen_ts) <= self.track_reassoc_window_sec:
-                self.dormant_states.append({
-                    "last_pos": st.last_position,
-                    "first_prone_ts": st.first_prone_ts,
-                    "last_seen_ts": st.last_seen_ts,
-                    "linked_fall_id": st.linked_fall_id,
-                    "l1_alerted": st.l1_alerted,
-                    "l2_alerted": st.l2_alerted
-                })
-            del self.track_states[dead_id]
-
-        # Clean old dormant states
-        self.dormant_states = [d for d in self.dormant_states if (timestamp - d["last_seen_ts"]) <= self.track_reassoc_window_sec]
-
         return events
+

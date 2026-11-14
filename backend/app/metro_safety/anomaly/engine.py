@@ -76,7 +76,7 @@ class AnomalyEngine:
             confidence_thresh=ao_cfg.get("confidence_threshold", 0.20)
         )
         if object_detector is not None:
-            self.abandoned_object_detector.yolo_model = object_detector
+            self.abandoned_object_detector.object_detector = object_detector
 
         # 4. Theft / Snatch Prototype
         snatch_cfg = anomaly_cfg.get("theft_snatch", {})
@@ -111,13 +111,13 @@ class AnomalyEngine:
             else:
                 logger.info(f"STG-NF checkpoint not found at {ckpt_path}; pose flow evaluator disabled.")
 
-        # Dedup cooldown tracking: (key, event_type) -> last_alert_ts
-        self._dedup_cache: Dict[Tuple[str, str], float] = {}
+        # Dedup cooldown tracking: (track_id, event_type) -> (last_alert_ts, severity)
+        self._dedup_cache: Dict[Tuple[str, str], Tuple[float, str]] = {}
         self.dedup_cooldown_sec = anomaly_cfg.get("dedup_cooldown_sec", 15.0)
 
     def set_object_detector(self, detector: Any):
         """Assign or update YOLO detector for luggage classes."""
-        self.abandoned_object_detector.yolo_model = detector
+        self.abandoned_object_detector.object_detector = detector
 
     def process_frame(
         self,
@@ -178,8 +178,8 @@ class AnomalyEngine:
                 ev.zone_version = zone_version
             emitted_events.extend(loit_events)
 
-        # 3. Abandoned Object Detection (YOLO bags on decimated frames)
-        if self.ao_enabled:
+        # 3. Abandoned Object Detection (Run bag tracking if AO or Snatch enabled)
+        if self.ao_enabled or self.snatch_enabled:
             ao_events = self.abandoned_object_detector.process_frame(
                 frame=frame,
                 frame_idx=frame_idx,
@@ -189,12 +189,13 @@ class AnomalyEngine:
                 train_state=train_state,
                 synthetic_objects=synthetic_objects
             )
-            for ev in ao_events:
-                ev.camera_motion = camera_motion
-                ev.motion_reason = motion_reason
-                ev.zones_unverified = zones_unverified
-                ev.zone_version = zone_version
-            emitted_events.extend(ao_events)
+            if self.ao_enabled:
+                for ev in ao_events:
+                    ev.camera_motion = camera_motion
+                    ev.motion_reason = motion_reason
+                    ev.zones_unverified = zones_unverified
+                    ev.zone_version = zone_version
+                emitted_events.extend(ao_events)
 
         # 4. Theft / Snatch Prototype
         tracked_bags = list(self.abandoned_object_detector.tracked_objects.values())
@@ -242,7 +243,14 @@ class AnomalyEngine:
                         )
                         emitted_events.append(ev)
 
-        # Deduplicate and apply cooldowns
+        # Prune old cache entries periodically
+        if frame_idx % 100 == 0:
+            self._dedup_cache = {
+                k: v for k, v in self._dedup_cache.items()
+                if (now - v[0]) <= self.dedup_cooldown_sec * 2.0
+            }
+
+        # Deduplicate and apply cooldowns with severity escalation bypass
         final_events: List[SafetyEvent] = []
         for ev in emitted_events:
             ev.metadata["is_anomaly"] = True
@@ -250,9 +258,18 @@ class AnomalyEngine:
                 ev.metadata["disclaimer"] = "operator welfare review"
 
             key = (str(ev.track_id), ev.event_type.value)
-            last_ts = self._dedup_cache.get(key, 0.0)
-            if (now - last_ts) >= self.dedup_cooldown_sec:
-                self._dedup_cache[key] = now
+            sev = ev.metadata.get("severity_cap", ev.metadata.get("severity_code", "L1"))
+            cached = self._dedup_cache.get(key)
+            should_emit = False
+            if cached is None:
+                should_emit = True
+            else:
+                last_ts, last_sev = cached
+                if (now - last_ts) >= self.dedup_cooldown_sec or (sev == "L2" and last_sev == "L1"):
+                    should_emit = True
+
+            if should_emit:
+                self._dedup_cache[key] = (now, sev)
                 final_events.append(ev)
 
         return final_events

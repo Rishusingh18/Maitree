@@ -46,27 +46,20 @@ class AnomalyEvaluator:
         if not csv_path.exists():
             return {"error": f"Manifest file not found: {manifest_csv}"}
 
-        results = []
-        with open(csv_path, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                video_path = row.get("video_path")
-                gt = row.get("ground_truth")
-                # Run clip evaluation...
-                results.append({"video": video_path, "gt": gt, "hit": True, "time_to_alert": 1.2})
-
-        return {"status": "ok", "total_evaluated": len(results), "results": results}
+        raise NotImplementedError(
+            "Video manifest evaluation requires live clip decoding; use evaluate_synthetic_battery() or pass video clips to demo/run.py."
+        )
 
     def evaluate_synthetic_battery(self) -> Dict[str, Any]:
         """Runs evaluation battery on synthetic multi-agent scenarios."""
         generator = ScenarioGenerator(width=640, height=480, fps=25.0)
 
         scenarios = [
-            ("PERSON_DOWN", "PERSON_DOWN", 100),
-            ("BENCH_LYING", "PERSON_DOWN", 80),
-            ("LOITERING", "LOITERING", 120),
-            ("NORMAL_WAITING", "NORMAL", 80),
-            ("NORMAL_WALKING", "NORMAL", 80),
+            ("PERSON_DOWN", "PERSON_DOWN", 300),
+            ("BENCH_LYING", "PERSON_DOWN", 250),
+            ("LOITERING", "LOITERING", 850),
+            ("NORMAL_WAITING", "NORMAL", 150),
+            ("NORMAL_WALKING", "NORMAL", 150),
         ]
 
         metrics: Dict[str, Dict[str, Any]] = {}

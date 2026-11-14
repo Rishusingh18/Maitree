@@ -83,7 +83,9 @@ class FlowStep(nn.Module):
         self.flow_coupling = flow_coupling
         if A is None:
             g = Graph(strategy=strategy, max_hop=max_hops)
-            self.A = torch.from_numpy(g.A).float().to(device)
+            self.register_buffer("A", torch.from_numpy(g.A).float().to(device))
+        else:
+            self.register_buffer("A", A.float().to(device))
 
         self.actnorm = ActNorm2d(in_channels, actnorm_scale)
 
@@ -106,7 +108,7 @@ class FlowStep(nn.Module):
 
         # 3. coupling
         if flow_coupling == "additive":
-            self.block = get_stgcn(in_channels // 2, in_channels // 2, hidden_channels,
+            self.block = get_stgcn(in_channels // 2, hidden_channels, in_channels // 2,
                                    temporal_kernel_size=temporal_kernel_size, spatial_kernel_size=self.A.size(0),
                                    first=first
                                    )
@@ -140,7 +142,10 @@ class FlowStep(nn.Module):
         # 3. coupling
         z1, z2 = split_feature(z, "split")
         if self.flow_coupling == "additive":
-            z2 = z2 + self.block(z1)
+            h = z1.clone()
+            for gcn, importance in zip(self.block, self.edge_importance):
+                h, _ = gcn(h, self.A * importance)
+            z2 = z2 + h
         elif self.flow_coupling == "affine":
             if len(z1.shape) == 3:
                 z1 = z1.unsqueeze(dim=1)
@@ -169,7 +174,10 @@ class FlowStep(nn.Module):
         # 1.coupling
         z1, z2 = split_feature(input, "split")
         if self.flow_coupling == "additive":
-            z2 = z2 - self.block(z1)
+            h = z1.clone()
+            for gcn, importance in zip(self.block, self.edge_importance):
+                h, _ = gcn(h, self.A * importance)
+            z2 = z2 - h
         elif self.flow_coupling == "affine":
             if len(z1.shape) == 3:
                 z1 = z1.unsqueeze(dim=1)
@@ -263,7 +271,10 @@ class FlowNet(nn.Module):
             return self.encode(input, logdet)
 
     def encode(self, z, logdet=0.0):
-        logdet = torch.zeros(z.shape[0]).to(self.device)
+        if not isinstance(logdet, torch.Tensor):
+            logdet = torch.full((z.shape[0],), float(logdet), device=z.device)
+        else:
+            logdet = logdet.to(z.device)
         for i, (layer, shape) in enumerate(zip(self.layers, self.output_shapes)):
             z, logdet = layer(z, logdet, reverse=False)
         return z, logdet

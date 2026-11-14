@@ -5,6 +5,7 @@ Connects directly to the LiveHub for:
 - Live Incident Event Log with real-time SSE updates and dynamic table filling
 - Operator controls (Buzzer acknowledge, Mute toggle, Test Beep, ETS interlock, Train State)
 """
+import os
 import time
 import json
 from pathlib import Path
@@ -501,9 +502,14 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
         }
 
         function apiPost(url, payload = {}) {
+            const headers = { 'Content-Type': 'application/json' };
+            const apiKey = window.API_KEY || (new URLSearchParams(window.location.search)).get('key') || '';
+            if (apiKey) {
+                headers['X-API-Key'] = apiKey;
+            }
             return fetch(url, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: headers,
                 body: JSON.stringify(payload)
             })
             .then(r => {
@@ -722,7 +728,9 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                         const isAnom = ev.is_anomaly || ['PERSON_DOWN', 'LOITERING', 'ABANDONED_OBJECT', 'POSSIBLE_SNATCH', 'ANOMALY_POSE'].some(t => cleanType.indexOf(t) !== -1);
                         const anomBadge = isAnom ? '<span class="badge badge-anomaly" style="font-size: 10px; margin-right: 4px;">ANOMALY</span>' : '';
 
-                        const snapThumb = ev.snapshot_crop ? `<img src="${ev.snapshot_crop}" style="width:24px;height:24px;object-fit:cover;border-radius:3px;vertical-align:middle;margin-right:4px;" title="Object crop"/>` : '';
+                        const safeDataUri = /^data:image[/](jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
+                        const snapSrc = (ev.snapshot_crop && safeDataUri.test(ev.snapshot_crop)) ? ev.snapshot_crop : '';
+                        const snapThumb = snapSrc ? `<img src="${snapSrc}" style="width:24px;height:24px;object-fit:cover;border-radius:3px;vertical-align:middle;margin-right:4px;" title="Object crop"/>` : '';
 
                         html += `<tr>
                             <td>${timeStr}</td>
@@ -860,30 +868,50 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
 
         return Response(stream(), mimetype="text/event-stream")
 
+    def _is_authorized():
+        expected_key = os.environ.get("API_KEY")
+        if expected_key:
+            req_key = request.headers.get("X-API-Key") or request.args.get("key")
+            if req_key != expected_key:
+                return False
+        return True
+
     @app.route("/api/acknowledge", methods=["POST"])
     def api_acknowledge():
+        if not _is_authorized():
+            return jsonify({"status": "error", "message": "Unauthorized"}), 403
         return jsonify(active_hub.acknowledge_alarm())
 
     @app.route("/api/buzzer/toggle_mute", methods=["POST"])
     def api_buzzer_toggle_mute():
+        if not _is_authorized():
+            return jsonify({"status": "error", "message": "Unauthorized"}), 403
         return jsonify(active_hub.toggle_buzzer_mute())
 
     @app.route("/api/buzzer/test", methods=["POST"])
     def api_buzzer_test():
+        if not _is_authorized():
+            return jsonify({"status": "error", "message": "Unauthorized"}), 403
         data = request.get_json(silent=True) or {}
         pattern = data.get("pattern", "L2")
         return jsonify(active_hub.test_buzzer(pattern=pattern))
 
     @app.route("/api/ets/trigger", methods=["POST"])
     def api_ets_trigger():
+        if not _is_authorized():
+            return jsonify({"status": "error", "message": "Unauthorized"}), 403
         return jsonify(active_hub.trip_ets())
 
     @app.route("/api/ets/reset", methods=["POST"])
     def api_ets_reset():
+        if not _is_authorized():
+            return jsonify({"status": "error", "message": "Unauthorized"}), 403
         return jsonify(active_hub.reset_ets())
 
     @app.route("/api/train_state", methods=["POST"])
     def api_train_state():
+        if not _is_authorized():
+            return jsonify({"status": "error", "message": "Unauthorized"}), 403
         data = request.get_json(silent=True) or {}
         new_state = data.get("state", "ABSENT")
         return jsonify(active_hub.set_train_state(new_state))
@@ -891,6 +919,8 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
     @app.route("/api/alert", methods=["POST"])
     def api_external_alert():
         """Webhook endpoint for external systems."""
+        if not _is_authorized():
+            return jsonify({"status": "error", "message": "Unauthorized"}), 403
         data = request.get_json(silent=True) or {}
         active_hub.push_event(data)
         return jsonify({"status": "received"})
@@ -898,11 +928,8 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
     @app.route("/api/zones/confirm", methods=["POST"])
     def api_zones_confirm():
         """Operator confirmation of current or proposed zone alignment."""
-        expected_key = os.environ.get("API_KEY")
-        if expected_key:
-            req_key = request.headers.get("X-API-Key") or request.args.get("key")
-            if req_key != expected_key:
-                return jsonify({"status": "error", "message": "Unauthorized"}), 403
+        if not _is_authorized():
+            return jsonify({"status": "error", "message": "Unauthorized"}), 403
         res = active_hub.confirm_zone_alignment()
         status_code = 200 if res.get("status") == "ok" else 400
         return jsonify(res), status_code

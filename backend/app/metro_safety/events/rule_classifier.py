@@ -136,11 +136,15 @@ class TrackStateMachine:
             if self.confirmed_jump:
                 return self._make_event(EventType.DELIBERATE_JUMP, 0.92, latest, train_state)
 
-            # Compute vertical drop velocity of torso/center-of-mass across recent frames
+            # Compute vertical drop velocity of torso/center-of-mass across recent frames, accounting for frame gaps
             drop_deltas = []
             for i in range(1, min(6, len(self.observations))):
-                dy = self.observations[-i].torso_point[1] - self.observations[-i-1].torso_point[1]
-                drop_deltas.append(dy)
+                gap = self.observations[-i].frame_idx - self.observations[-i-1].frame_idx
+                if gap > 3:
+                    drop_deltas.append(0.0)
+                else:
+                    dy = (self.observations[-i].torso_point[1] - self.observations[-i-1].torso_point[1]) / max(1, gap)
+                    drop_deltas.append(dy)
             max_drop_vel = max(drop_deltas) if drop_deltas else 0.0
             positive_drops = sum(1 for dy in drop_deltas if dy > 0.5)
 

@@ -30,6 +30,7 @@ class STGNFEvaluator:
         self.device = device
         self.model = None
         self._is_loaded = False
+        self._track_buffers: dict = {}
 
         self._try_load_model()
 
@@ -66,6 +67,7 @@ class STGNFEvaluator:
 
             model.load_state_dict(ckpt["state_dict"], strict=False)
             model.set_actnorm_init()
+            model.to(self.device)
             model.eval()
             self.model = model
             self._is_loaded = True
@@ -121,26 +123,6 @@ class STGNFEvaluator:
 
         return op18
 
-    def update_track(self, track_id: int, keypoints: np.ndarray):
-        """Append keypoint frame to rolling buffer for track_id."""
-        if not hasattr(self, "_track_buffers"):
-            self._track_buffers = {}
-        if track_id not in self._track_buffers:
-            self._track_buffers[track_id] = []
-        buf = self._track_buffers[track_id]
-        buf.append(keypoints.copy())
-        if len(buf) > self.window_len:
-            buf.pop(0)
-
-    def evaluate_track(self, track_id: int) -> Tuple[bool, float, float]:
-        """Evaluate rolling sequence for track_id."""
-        if not hasattr(self, "_track_buffers"):
-            self._track_buffers = {}
-        buf = self._track_buffers.get(track_id, [])
-        if len(buf) < 12:
-            return False, 0.0, 0.0
-        return self.evaluate_sequence(buf)
-
     def evaluate_sequence(self, keypoint_sequence: List[np.ndarray]) -> Tuple[bool, float, float]:
         """Evaluate a temporal window of poses.
         Returns:
@@ -178,9 +160,14 @@ class STGNFEvaluator:
             try:
                 import torch
                 t_input = torch.tensor(tensor_in, dtype=torch.float32, device=self.device)
+                y = torch.ones(t_input.size(0), dtype=torch.long, device=self.device)
                 with torch.no_grad():
-                    _, nll_val = self.model(t_input)
-                    nll = float(nll_val.mean().cpu().item())
+                    out = self.model(t_input, label=y)
+                    if isinstance(out, tuple):
+                        nll_val = out[1]
+                    else:
+                        nll_val = out
+                    nll = float(nll_val.mean().cpu().item()) if hasattr(nll_val, "mean") else float(nll_val)
                 
                 # Calibrate probability using sigmoid-like scaling
                 delta = nll - self.anomaly_nll_thresh
@@ -192,13 +179,36 @@ class STGNFEvaluator:
                 logger.debug(f"[STG-NF] Inference exception: {inf_err}")
 
         # Fallback heuristic scoring: measure torso flatness and keypoint jerkiness
-        # If model is unavailable
         y_spans = [float(np.max(p[:, 1]) - np.min(p[:, 1])) for p in sampled]
         x_spans = [float(np.max(p[:, 0]) - np.min(p[:, 0])) for p in sampled]
         avg_aspect = np.mean(x_spans) / max(1.0, float(np.mean(y_spans)))
 
         # Aspect ratio > 1.2 indicates horizontal body
-        is_anom = avg_aspect > 1.2
-        pseudo_nll = 15.0 if is_anom else 8.0
+        pseudo_nll = 15.0 if avg_aspect > 1.2 else 8.0
+        is_anom = pseudo_nll > self.anomaly_nll_thresh
         conf = 0.85 if is_anom else 0.10
         return is_anom, pseudo_nll, conf
+
+    def update_track(self, track_id: int, keypoints: np.ndarray):
+        """Append recent pose keypoints for this track ID."""
+        if track_id not in self._track_buffers:
+            self._track_buffers[track_id] = []
+        buf = self._track_buffers[track_id]
+        buf.append(keypoints)
+        if len(buf) > self.window_len * 2:
+            buf.pop(0)
+
+    def evaluate_track(self, track_id: int) -> Tuple[bool, float, float]:
+        """Evaluate rolling pose sequence for an active track."""
+        buf = self._track_buffers.get(track_id, [])
+        warmup = min(12, self.window_len // 2)
+        if len(buf) < warmup:
+            return False, 0.0, 0.0
+        return self.evaluate_sequence(buf)
+
+    def prune_track_buffers(self, active_track_ids: set):
+        """Clean up buffers for departed tracks."""
+        for tid in list(self._track_buffers.keys()):
+            if tid not in active_track_ids:
+                del self._track_buffers[tid]
+

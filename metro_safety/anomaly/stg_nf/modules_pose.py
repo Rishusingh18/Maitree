@@ -52,15 +52,13 @@ def unsqueeze2d(input, factor):
     if factor == 1:
         return input
 
-    factor2 = factor ** 2
-
     B, C, T, V = input.size()
 
-    assert C % (factor2) == 0, "C module factor squared is not 0"
+    assert C % factor == 0, "C modulo factor is not 0"
 
-    x = input.view(B, C // factor2, factor, T, V)
-    x = x.permute(0, 1, 4, 2, 3).contiguous()
-    x = x.view(B, C // (factor2), T * factor, V)
+    x = input.view(B, C // factor, factor, T, V)
+    x = x.permute(0, 1, 3, 2, 4).contiguous()
+    x = x.view(B, C // factor, T * factor, V)
 
     return x
 
@@ -212,7 +210,7 @@ class Conv2d(nn.Module):
         self.do_actnorm = do_actnorm
 
     def forward(self, input):
-        x = self.conv(input.squeeze())
+        x = self.conv(input)
         if self.do_actnorm:
             x, _ = self.actnorm(x)
         return x
@@ -252,11 +250,12 @@ class Permute2d(nn.Module):
     def __init__(self, num_channels, shuffle):
         super().__init__()
         self.num_channels = num_channels
-        self.indices = torch.arange(self.num_channels - 1, -1, -1, dtype=torch.long)
-        self.indices_inverse = torch.zeros((self.num_channels), dtype=torch.long)
-
+        idx = torch.arange(self.num_channels - 1, -1, -1, dtype=torch.long)
+        self.register_buffer("indices", idx)
+        idx_inv = torch.zeros(self.num_channels, dtype=torch.long)
         for i in range(self.num_channels):
-            self.indices_inverse[self.indices[i]] = i
+            idx_inv[self.indices[i]] = i
+        self.register_buffer("indices_inverse", idx_inv)
 
         if shuffle:
             self.reset_indices()

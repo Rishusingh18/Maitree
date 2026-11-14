@@ -65,6 +65,16 @@ class EscalationEngine:
             import logging
             logging.getLogger("EscalationEngine").error(f"Notifier send_alert failed: {e}")
 
+    def _activate_buzzer(self, pattern: str):
+        # Prevent overriding continuous emergency siren with pulsed warning
+        has_critical = any(
+            h in [EventType.ACCIDENTAL_FALL, EventType.DELIBERATE_JUMP]
+            for h in self.active_audible_hazards.values()
+        )
+        if has_critical and pattern in ["PULSED", "PULSED_FAST"]:
+            return  # keep CONTINUOUS_HIGH active
+        self.buzzer.activate(self.platform_id, pattern=pattern)
+
     def evaluate(
         self,
         event: SafetyEvent,
@@ -127,7 +137,7 @@ class EscalationEngine:
                 if event.track_id in self.active_intrusions:
                     del self.active_intrusions[event.track_id]
                 self.active_audible_hazards[event.track_id] = ev_type
-                self.buzzer.activate(self.platform_id, pattern="PULSED")
+                self._activate_buzzer("PULSED")
                 self._safe_send_alert(event, severity, action_msg)
             else:
                 severity = SeverityLevel.L3
@@ -135,7 +145,7 @@ class EscalationEngine:
                 buzzer_active = True
                 cr_alert = True
                 self.active_audible_hazards[event.track_id] = ev_type
-                self.buzzer.activate(self.platform_id, pattern="CONTINUOUS_HIGH")
+                self._activate_buzzer("CONTINUOUS_HIGH")
                 self._safe_send_alert(event, severity, action_msg)
                 ets_active = self.trip_switch.trigger_stop(event, self.station_id, self.platform_id)
 
@@ -153,7 +163,7 @@ class EscalationEngine:
                 buzzer_active = True
                 cr_alert = True
                 self.active_audible_hazards[event.track_id] = ev_type
-                self.buzzer.activate(self.platform_id, pattern="CONTINUOUS_HIGH")
+                self._activate_buzzer("CONTINUOUS_HIGH")
                 self._safe_send_alert(event, severity, action_msg)
                 ets_active = self.trip_switch.trigger_stop(event, self.station_id, self.platform_id)
             else:
@@ -163,7 +173,7 @@ class EscalationEngine:
                 buzzer_active = True
                 cr_alert = True
                 self.active_audible_hazards[event.track_id] = ev_type
-                self.buzzer.activate(self.platform_id, pattern="PULSED")
+                self._activate_buzzer("PULSED")
                 self._safe_send_alert(event, severity, action_msg)
 
         # 4. Yellow Line Crossing
@@ -174,24 +184,25 @@ class EscalationEngine:
                 buzzer_active = True
                 cr_alert = True
                 self.active_audible_hazards[event.track_id] = ev_type
-                self.buzzer.activate(self.platform_id, pattern="PULSED_FAST")
+                self._activate_buzzer("PULSED_FAST")
                 self._safe_send_alert(event, severity, action_msg)
             else:
                 severity = SeverityLevel.L1
                 action_msg = "Yellow line safety boundary crossed. Local platform warning buzzer active."
                 buzzer_active = True
                 self.active_audible_hazards[event.track_id] = ev_type
-                self.buzzer.activate(self.platform_id, pattern="PULSED")
+                self._activate_buzzer("PULSED")
 
         # 5. Anomaly & Welfare Events (Strictly advisory review, max L2, NEVER ETS, NEVER L3 siren)
         elif ev_type in [EventType.PERSON_DOWN, EventType.LOITERING, EventType.ABANDONED_OBJECT, EventType.POSSIBLE_SNATCH, EventType.ANOMALY_POSE]:
             is_camera_moving = getattr(event, "camera_motion", False)
             zones_unverified = getattr(event, "zones_unverified", False)
             requested_severity = event.metadata.get("severity_cap", "L2")
+            is_low_trust = is_camera_moving or zones_unverified
 
             if ev_type == EventType.PERSON_DOWN:
-                dur = event.metadata.get("prone_duration_sec", 0.0)
-                if requested_severity == "L1" or dur < 25.0:
+                dur = event.metadata.get("prone_duration_sec", event.metadata.get("duration_sec", 0.0))
+                if requested_severity == "L1" or dur < 25.0 or is_low_trust:
                     severity = SeverityLevel.L1
                     action_msg = f"WELFARE NOTICE: Person lying down ({dur:.1f}s) - operator review."
                     buzzer_active = False
@@ -202,11 +213,11 @@ class EscalationEngine:
                     buzzer_active = True
                     cr_alert = True
                     self.active_audible_hazards[event.track_id] = ev_type
-                    self.buzzer.activate(self.platform_id, pattern="PULSED")
+                    self._activate_buzzer("PULSED")
 
             elif ev_type == EventType.LOITERING:
-                dwell = event.metadata.get("dwell_time_sec", 0.0)
-                if requested_severity == "L1" or dwell < 45.0:
+                dwell = event.metadata.get("dwell_time_sec", event.metadata.get("duration_sec", 0.0))
+                if requested_severity == "L1" or dwell < 45.0 or is_low_trust:
                     severity = SeverityLevel.L1
                     action_msg = f"MONITOR NOTICE: Extended dwell in {event.zone} ({dwell:.1f}s)."
                     buzzer_active = False
@@ -217,18 +228,18 @@ class EscalationEngine:
                     buzzer_active = True
                     cr_alert = True
                     self.active_audible_hazards[event.track_id] = ev_type
-                    self.buzzer.activate(self.platform_id, pattern="PULSED")
+                    self._activate_buzzer("PULSED")
 
             elif ev_type == EventType.ABANDONED_OBJECT:
                 obj_cls = event.metadata.get("object_class", "luggage")
                 unattended_s = event.metadata.get("unattended_duration_sec", 0.0)
-                severity = SeverityLevel.L2
+                severity = SeverityLevel.L1 if is_low_trust else SeverityLevel.L2
                 action_msg = f"SECURITY REVIEW: Unattended {obj_cls} detected ({unattended_s:.1f}s) - operator inspection required."
                 buzzer_active = False
                 cr_alert = True
 
             elif ev_type == EventType.POSSIBLE_SNATCH:
-                severity = SeverityLevel.L2
+                severity = SeverityLevel.L1 if is_low_trust else SeverityLevel.L2
                 action_msg = "SECURITY REVIEW: Possible snatch detected - operator verification required."
                 buzzer_active = False
                 cr_alert = True
@@ -240,11 +251,14 @@ class EscalationEngine:
                 buzzer_active = False
                 cr_alert = True
 
-            if is_camera_moving or zones_unverified:
-                severity = SeverityLevel.L1
+            if is_low_trust:
                 reason = getattr(event, 'motion_reason', 'camera motion') if is_camera_moving else 'unverified zones'
                 action_msg = f"LOW TRUST ({reason}): {action_msg}"
                 buzzer_active = False
+                if event.track_id in self.active_audible_hazards:
+                    del self.active_audible_hazards[event.track_id]
+                    if not self.active_audible_hazards and not self.active_intrusions:
+                        self.buzzer.deactivate(self.platform_id)
 
             ets_active = False  # STRICT REQUIREMENT: Anomaly events NEVER trigger ETS
             self._safe_send_alert(event, severity, action_msg)

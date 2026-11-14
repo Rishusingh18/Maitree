@@ -260,6 +260,7 @@ def calibrate_zones(
             tmp_cfg_path = cfg_file.with_name(f"{cfg_file.stem}.tmp{cfg_file.suffix}")
 
             backups = {}
+            pre_existing = {target: target.exists() for target in [ref_img_path, ref_poly_path, cfg_file]}
             try:
                 # 1. Write staged image
                 success_img = cv2.imwrite(str(tmp_img_path), reference_frame)
@@ -313,6 +314,13 @@ def calibrate_zones(
                     if bak.exists():
                         try:
                             shutil.move(str(bak), str(target))
+                        except Exception:
+                            pass
+                # Delete newly created files that did not pre-exist
+                for target, existed in pre_existing.items():
+                    if not existed and target.exists():
+                        try:
+                            target.unlink()
                         except Exception:
                             pass
                 for tmp_p in [tmp_img_path, tmp_poly_path, tmp_cfg_path]:
