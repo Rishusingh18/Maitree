@@ -26,7 +26,7 @@ from metro_safety.config import load_config
 from metro_safety.demo.hub import LiveHub, get_global_hub
 from metro_safety.escalation.engine import EscalationEngine, SeverityLevel
 from metro_safety.events.models import SafetyEvent, EventType
-from metro_safety.zones.geometry import ZoneManager
+from metro_safety.zones.geometry import ZoneManager, validate_polygon
 from metro_safety.zones.registration import AdaptiveZoneTracker, AlignmentStatus, RegistrationResult
 from tools.simulate_camera_shake import generate_camera_shake, verify_drift_against_ground_truth
 
@@ -347,3 +347,24 @@ def test_artificial_shake_clip_yields_zero_false_l3():
     )
     assert passed
     assert rms_err < 1e-4
+
+
+# ---------------------------------------------------------------------------
+# TEST 7: Auto-Suggest Zones (Item 10)
+# ---------------------------------------------------------------------------
+def test_auto_suggest_zones_produces_valid_polygons(sample_reference_scene, tmp_path):
+    """Auto-suggest tool must produce valid, non-intersecting candidate polygons."""
+    from metro_safety.tools.auto_suggest_zones import auto_suggest_zones
+    out_json = tmp_path / "suggested_zones.json"
+    suggested = auto_suggest_zones(sample_reference_scene, output_json_path=str(out_json))
+
+    assert "platform" in suggested
+    assert "yellow_band" in suggested
+    assert "track_bed" in suggested
+    assert out_json.exists()
+
+    # Re-verify every suggested polygon passes strict validation
+    for name, poly in suggested.items():
+        v, m = validate_polygon(poly, name=name)
+        assert v, f"Auto-suggested zone '{name}' failed validation: {m}"
+
