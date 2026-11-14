@@ -100,6 +100,21 @@ async def process_control(request: Request, authorized: bool = Depends(get_api_k
         logger.error(f"Control action error: {e}")
         return JSONResponse({"status": "error", "message": str(e)}, status_code=400)
 
+@app.post("/api/zones/confirm", tags=["Operator Controls"])
+async def confirm_zones(authorized: bool = Depends(get_api_key)):
+    """Operator confirmation of current or proposed zone alignment."""
+    hub = get_global_hub()
+    res = hub.confirm_zone_alignment()
+    return JSONResponse(res)
+
+@app.api_route("/api/zones/confirm", methods=["GET"], tags=["Operator Controls"])
+async def confirm_zones_get():
+    """Explicitly reject GET requests with 405 Method Not Allowed."""
+    return JSONResponse(
+        {"status": "error", "message": "Method Not Allowed. Use POST /api/zones/confirm."},
+        status_code=405
+    )
+
 # Mount the enterprise frontend at /
 frontend_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "frontend"))
 if os.path.isdir(frontend_path):

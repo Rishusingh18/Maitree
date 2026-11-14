@@ -95,15 +95,20 @@ class LiveHub:
             logger.warning(f"Could not initialize HardwareBuzzer in LiveHub: {_b_init_err}")
             self.buzzer = None
         self.train_state_provider = None
+        self.zone_tracker = None
 
         try:
             CACHE_DIR.mkdir(parents=True, exist_ok=True)
         except Exception:
             pass
 
-    def set_hardware_components(self, buzzer=None, train_state_provider=None):
-        self.buzzer = buzzer
-        self.train_state_provider = train_state_provider
+    def set_hardware_components(self, buzzer=None, train_state_provider=None, zone_tracker=None):
+        if buzzer is not None:
+            self.buzzer = buzzer
+        if train_state_provider is not None:
+            self.train_state_provider = train_state_provider
+        if zone_tracker is not None:
+            self.zone_tracker = zone_tracker
 
     # ================= Video Streaming =================
     def update_frame(self, frame: Optional[np.ndarray], is_online: bool = True, status_msg: str = ""):
@@ -264,6 +269,39 @@ class LiveHub:
             if camera_motion_reason:
                 self.camera_motion_reason = str(camera_motion_reason)
 
+            # Adaptive zone status
+            adaptive_info = {
+                "status": "ALIGNED",
+                "inliers": 0,
+                "inlier_ratio": 1.0,
+                "confidence": 1.0,
+                "drift_px": 0.0,
+                "scale": 1.0,
+                "zone_version": 1,
+                "registration_cost_ms": 0.0,
+                "requires_operator_confirmation": False,
+                "zones_unverified": False,
+                "failure_reason": ""
+            }
+            if self.zone_tracker:
+                try:
+                    reg = self.zone_tracker.get_latest_result()
+                    adaptive_info = {
+                        "status": reg.status.value if hasattr(reg.status, "value") else str(reg.status),
+                        "inliers": int(reg.inlier_count),
+                        "inlier_ratio": round(float(reg.inlier_ratio), 3),
+                        "confidence": round(float(reg.confidence), 3),
+                        "drift_px": round(float(reg.drift_px), 2),
+                        "scale": round(float(reg.scale), 3),
+                        "zone_version": int(reg.zone_version),
+                        "registration_cost_ms": round(float(reg.reg_time_ms), 2),
+                        "requires_operator_confirmation": bool(reg.requires_operator_confirmation),
+                        "zones_unverified": bool(reg.zones_unverified),
+                        "failure_reason": str(reg.failure_reason)
+                    }
+                except Exception:
+                    pass
+
             # Persist for cross-process
             try:
                 t_payload = {
@@ -286,6 +324,7 @@ class LiveHub:
                     "camera_motion": self.camera_motion,
                     "camera_motion_reason": self.camera_motion_reason,
                     "producer_pid": self.producer_pid,
+                    "adaptive_zones": adaptive_info,
                     "timestamp": time.time()
                 }
                 TELEMETRY_CACHE_PATH.write_text(json.dumps(t_payload))
@@ -304,6 +343,38 @@ class LiveHub:
                 "last_test_time": getattr(self, "_last_test_time", 0.0),
                 "clear_timer_remaining": 0.0
             }
+            adaptive_info = {
+                "status": "ALIGNED",
+                "inliers": 0,
+                "inlier_ratio": 1.0,
+                "confidence": 1.0,
+                "drift_px": 0.0,
+                "scale": 1.0,
+                "zone_version": 1,
+                "registration_cost_ms": 0.0,
+                "requires_operator_confirmation": False,
+                "zones_unverified": False,
+                "failure_reason": ""
+            }
+            if self.zone_tracker:
+                try:
+                    reg = self.zone_tracker.get_latest_result()
+                    adaptive_info = {
+                        "status": reg.status.value if hasattr(reg.status, "value") else str(reg.status),
+                        "inliers": int(reg.inlier_count),
+                        "inlier_ratio": round(float(reg.inlier_ratio), 3),
+                        "confidence": round(float(reg.confidence), 3),
+                        "drift_px": round(float(reg.drift_px), 2),
+                        "scale": round(float(reg.scale), 3),
+                        "zone_version": int(reg.zone_version),
+                        "registration_cost_ms": round(float(reg.reg_time_ms), 2),
+                        "requires_operator_confirmation": bool(reg.requires_operator_confirmation),
+                        "zones_unverified": bool(reg.zones_unverified),
+                        "failure_reason": str(reg.failure_reason)
+                    }
+                except Exception:
+                    pass
+
             res = {
                 "session_id": self.session_id,
                 "cctv_id": self.cctv_id,
@@ -325,6 +396,7 @@ class LiveHub:
                 "retry_status": self.retry_status,
                 "camera_motion": self.camera_motion,
                 "camera_motion_reason": self.camera_motion_reason,
+                "adaptive_zones": adaptive_info,
                 "producer_pid": self.producer_pid,
                 "server_pid": os.getpid(),
                 "pid_match": bool(self.producer_pid == os.getpid())
@@ -336,7 +408,7 @@ class LiveHub:
                 mtime = TELEMETRY_CACHE_PATH.stat().st_mtime
                 if (time.time() - mtime) < 4.0:
                     cached = json.loads(TELEMETRY_CACHE_PATH.read_text())
-                    for k in ["live_fps", "detector_fps", "live_latency_ms", "is_fallback", "source_target", "retry_status"]:
+                    for k in ["live_fps", "detector_fps", "live_latency_ms", "is_fallback", "source_target", "retry_status", "adaptive_zones"]:
                         if k in cached:
                             res[k] = cached[k]
                     if "train_state" in cached:
@@ -592,6 +664,17 @@ class LiveHub:
             "session_id": self.session_id
         })
         return {"status": "ok", "ets_status": "DISENGAGED"}
+
+    def confirm_zone_alignment(self) -> Dict[str, Any]:
+        """Operator confirmation of current/proposed zone alignment."""
+        with self._lock:
+            tracker = self.zone_tracker
+
+        if tracker is not None:
+            success, msg = tracker.confirm_alignment()
+            return {"status": "ok" if success else "error", "message": msg}
+        return {"status": "ok", "message": "Zone alignment verified (in memory)."}
+
 
 
 # Global module singleton

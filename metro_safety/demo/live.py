@@ -31,6 +31,7 @@ from metro_safety.perception.camera_motion import CameraMotionDetector
 from metro_safety.perception.async_inference import AsyncInferenceWorker
 from metro_safety.tracking.tracker import ByteTracker
 from metro_safety.zones.geometry import ZoneManager
+from metro_safety.zones.registration import AdaptiveZoneTracker, AlignmentStatus
 from metro_safety.perception.train_state import TrainState, SimulatedTrainStateProvider
 from metro_safety.events.rule_classifier import RuleBasedEventClassifier
 from metro_safety.events.learned_classifier import LearnedEventClassifier
@@ -139,6 +140,12 @@ def run_live_pipeline(
 
     # 4. Initialize Perception & Safety Modules
     zm = ZoneManager(cfg["zones"])
+    zone_tracker = AdaptiveZoneTracker(
+        zone_manager=zm,
+        config=cfg,
+        reference_image_path=cfg.get("reference_frame")
+    )
+    hub.set_hardware_components(buzzer=buzzer, train_state_provider=train_provider, zone_tracker=zone_tracker)
     tracker = ByteTracker(
         track_high_thresh=cfg["tracking"].get("track_high_thresh", 0.22),
         track_low_thresh=cfg["tracking"].get("track_low_thresh", 0.12),
@@ -223,6 +230,8 @@ def run_live_pipeline(
     banner_expire_time = 0.0
     last_event_time = {}
     event_cooldown_sec = 5.0
+    last_zone_event_time = {}
+    zone_cooldown_sec = float(cfg.get("adaptive_zones", {}).get("unverified_zone_cooldown_sec", 4.0))
     cached_detections: List[Detection] = []
 
     print("[Live] Video pipeline active. Monitoring stream...")
@@ -328,12 +337,31 @@ def run_live_pipeline(
                 retry_stat = getattr(frame_source, "retry_status", "Active")
                 is_demo = is_fallback or ("demo" in str(resolved_source).lower())
 
+                if frame_idx == 1:
+                    zone_tracker.on_first_frame(frame)
+                zone_tracker.set_demo_mode(is_demo)
+
+                person_boxes = [trk.box for trk in tracks] if tracks else [d.box for d in detections]
+                zone_tracker.submit_frame(frame, frame_idx, person_boxes, frame_ts)
+                reg_result = zone_tracker.get_latest_result()
+
+                for ev in all_events:
+                    ev.zones_unverified = reg_result.zones_unverified
+                    ev.zone_version = reg_result.zone_version
+
                 for ev in all_events:
                     # Event Deduplication: Cooldown per (track_id, event_type)
                     dedup_key = (ev.track_id, ev.event_type.name)
                     if frame_ts - last_event_time.get(dedup_key, 0.0) < event_cooldown_sec:
                         continue
                     last_event_time[dedup_key] = frame_ts
+
+                    # Dual cooldown during UNVERIFIED state to prevent alert storms
+                    if reg_result.zones_unverified:
+                        z_key = (ev.zone, ev.event_type.name)
+                        if frame_ts - last_zone_event_time.get(z_key, 0.0) < zone_cooldown_sec:
+                            continue
+                        last_zone_event_time[z_key] = frame_ts
 
                     try:
                         dec = escalation.evaluate(
@@ -404,9 +432,16 @@ def run_live_pipeline(
 
                 # 5. Annotation & Visual Rendering Stage
                 t0_draw = time.perf_counter()
-                annotated = frame.copy()
-                # Draw defined platform zones
-                zm.draw_zones(annotated, alpha=0.25)
+                # Draw defined platform zones with adaptive telemetry
+                status_badge_text = f"ALIGN: {reg_result.status.value} | DRIFT: {reg_result.drift_px:.1f}px | INL: {reg_result.inlier_count} | V:{reg_result.zone_version}"
+                annotated = zm.draw_zones(
+                    frame.copy(),
+                    alpha=0.25,
+                    unverified=reg_result.zones_unverified,
+                    draw_baseline=True,
+                    drift_px=reg_result.drift_px,
+                    status_badge=status_badge_text
+                )
 
                 # Draw tracks, pose skeletons, and debug telemetry
                 for trk in tracks:
@@ -599,6 +634,11 @@ def run_live_pipeline(
             print(f"Measured Display FPS: {curr_fps:.1f} | Detector FPS: {det_fps:.1f} | Latency: {curr_lat:.1f} ms\n")
 
         print("[Live] Cleaning up hardware resources...")
+        try:
+            if 'zone_tracker' in locals() and zone_tracker:
+                zone_tracker.stop()
+        except Exception:
+            pass
         try:
             async_inference.stop()
         except Exception:

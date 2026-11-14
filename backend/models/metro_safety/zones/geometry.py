@@ -111,6 +111,8 @@ class ZoneManager:
     def __init__(self, zone_config: Dict[str, List[List[float]]], auto_fix: bool = False):
         self.zones: Dict[str, Zone] = {}
         self.invalid_zones: Dict[str, str] = {}
+        self.zone_version: int = 1
+        self.baseline_zones: Dict[str, List[List[float]]] = {k: [list(pt) for pt in v] for k, v in zone_config.items()}
 
         for name, poly in zone_config.items():
             if not poly or len(poly) < 3:
@@ -147,6 +149,30 @@ class ZoneManager:
         # Strict: Persons not in any monitored platform/track zone are classified as 'outside'
         return "outside"
 
+    def get_polygons(self) -> Dict[str, List[List[float]]]:
+        """Return dict of current active polygon vertices."""
+        return {name: [list(pt) for pt in zone.polygon.tolist()] for name, zone in self.zones.items()}
+
+    def update_zones(self, new_zone_config: Dict[str, List[List[float]]], version: Optional[int] = None) -> bool:
+        """Atomically update all zone polygons after validation."""
+        temp_zones: Dict[str, Zone] = {}
+        for name, poly in new_zone_config.items():
+            if not poly or len(poly) < 3:
+                continue
+            valid, err_msg = validate_polygon(poly, name=name)
+            if not valid:
+                logger.error(f"[ZoneManager] Proposed zone '{name}' failed validation ({err_msg}). Rejection atomic.")
+                return False
+            temp_zones[name] = Zone(name, [tuple(pt) for pt in poly], strict_validate=True)
+
+        # Atomic swap
+        self.zones = temp_zones
+        if version is not None:
+            self.zone_version = version
+        else:
+            self.zone_version += 1
+        return True
+
     def is_in_zone(self, point: Tuple[float, float], zone_name: str) -> bool:
         """Check if point is inside a specific zone."""
         if zone_name in self.zones:
@@ -158,8 +184,18 @@ class ZoneManager:
         zone = self.get_zone_for_point(point)
         return zone not in ["outside", "ignore"]
 
-    def draw_zones(self, frame: np.ndarray, alpha: float = 0.35) -> np.ndarray:
-        """Draw transparent zone overlays onto the frame."""
+    def draw_zones(
+        self,
+        frame: np.ndarray,
+        alpha: float = 0.35,
+        unverified: bool = False,
+        draw_baseline: bool = False,
+        drift_px: float = 0.0,
+        status_badge: str = ""
+    ) -> np.ndarray:
+        """Draw transparent zone overlays onto the frame.
+        Optionally renders baseline faint outlines, unverified styling, and drift telemetry.
+        """
         overlay = frame.copy()
         colors = {
             "platform": (0, 200, 0),       # Green
@@ -169,15 +205,46 @@ class ZoneManager:
             "ignore": (160, 100, 160)       # Muted Purple/Grey for Ignore/Seating
         }
 
+        # Draw baseline faint outline if requested
+        if draw_baseline:
+            for b_name, b_poly in self.baseline_zones.items():
+                if len(b_poly) >= 3:
+                    pts_arr = np.array(b_poly, dtype=np.int32).reshape((-1, 1, 2))
+                    cv2.polylines(frame, [pts_arr], isClosed=True, color=(120, 120, 120), thickness=1, lineType=cv2.LINE_AA)
+
         for name, zone in self.zones.items():
-            color = colors.get(name, (200, 200, 200))
+            base_color = colors.get(name, (200, 200, 200))
+            if unverified:
+                # Distinct amber/orange tint when unverified
+                color = (0, 165, 255)
+            else:
+                color = base_color
+
             cv2.fillPoly(overlay, [zone.polygon], color)
-            cv2.polylines(frame, [zone.polygon], isClosed=True, color=color, thickness=2)
+            line_thickness = 1 if unverified else 2
+            cv2.polylines(frame, [zone.polygon], isClosed=True, color=color, thickness=line_thickness, lineType=cv2.LINE_AA)
             # Add label
             moments = cv2.moments(zone.polygon)
             if moments["m00"] != 0:
                 cX = int(moments["m10"] / moments["m00"])
                 cY = int(moments["m01"] / moments["m00"])
-                cv2.putText(frame, name.upper(), (cX - 30, cY), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+                lbl = f"{name.upper()} [UNVERIFIED]" if unverified else name.upper()
+                cv2.putText(frame, lbl, (cX - 30, cY), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
 
-        return cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+        result = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+
+        # Draw alignment status badge and drift vector arrow if requested
+        if status_badge:
+            h, w = result.shape[:2]
+            badge_bg = (20, 20, 180) if unverified else (20, 100, 20)
+            cv2.rectangle(result, (w - 380, h - 38), (w - 10, h - 10), badge_bg, -1)
+            cv2.rectangle(result, (w - 380, h - 38), (w - 10, h - 10), (200, 200, 200), 1)
+            cv2.putText(result, status_badge, (w - 370, h - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 1, cv2.LINE_AA)
+
+            if drift_px > 0.5:
+                # Small drift vector arrow
+                arrow_start = (w - 395, h - 24)
+                arrow_end = (w - 415, h - 24)
+                cv2.arrowedLine(result, arrow_start, arrow_end, (0, 200, 255), 2, tipLength=0.35)
+
+        return result

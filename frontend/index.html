@@ -1141,6 +1141,20 @@
         </div>
       </div>
 
+      <!-- Adaptive Zones Unverified / Confirmation Banner -->
+      <div id="zone-unverified-banner" class="hidden mb-4 p-3 rounded-lg border flex items-center justify-between" style="background: rgba(245, 158, 11, 0.15); border-color: #F59E0B;">
+        <div class="flex items-center space-x-3">
+          <span class="text-amber-500 font-bold text-lg">⚠</span>
+          <div>
+            <div class="font-bold text-xs text-amber-400" id="zone-banner-title">ZONES UNVERIFIED — CAMERA DRIFT DETECTED</div>
+            <div class="text-[11px] text-[var(--muted-foreground)]" id="zone-banner-desc">Camera misalignment detected. Operator verification required.</div>
+          </div>
+        </div>
+        <button id="btn-confirm-zones" onclick="confirmZoneAlignment()" class="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-40 text-black font-semibold text-xs rounded transition flex items-center space-x-1 cursor-pointer">
+          <span>Confirm Current Zones</span>
+        </button>
+      </div>
+
       <!-- Tactical Control Layout -->
       <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
         <div class="lg:col-span-7 bg-[var(--surface)] border border-[var(--border)] rounded-lg shadow-xs p-5 space-y-4">
@@ -3342,6 +3356,27 @@
             }
           }
 
+          // Update Adaptive Zones Unverified Banner
+          const zoneBanner = document.getElementById('zone-unverified-banner');
+          const zoneBtn = document.getElementById('btn-confirm-zones');
+          const zoneTitle = document.getElementById('zone-banner-title');
+          const zoneDesc = document.getElementById('zone-banner-desc');
+          const az = data.adaptive_zones;
+          if (zoneBanner && az && (az.zones_unverified || az.requires_operator_confirmation || az.status === 'UNVERIFIED_REFERENCE' || az.status === 'ZONES UNVERIFIED')) {
+            zoneBanner.classList.remove('hidden');
+            if (zoneTitle) {
+              zoneTitle.textContent = (az.status === 'UNVERIFIED_REFERENCE')
+                ? 'UNVERIFIED REFERENCE FRAME — OPERATOR CONFIRMATION REQUIRED'
+                : 'ZONES UNVERIFIED — CAMERA DRIFT / OCCLUSION DETECTED';
+            }
+            if (zoneDesc) {
+              zoneDesc.textContent = `Drift: ${(az.drift_px||0).toFixed(1)}px | Inliers: ${az.inliers||0} | Status: ${az.status}${az.failure_reason ? ' (' + az.failure_reason + ')' : ''}`;
+            }
+            if (zoneBtn) zoneBtn.disabled = false;
+          } else if (zoneBanner) {
+            zoneBanner.classList.add('hidden');
+          }
+
           // Update the diagnostic terminal log
           const termLog = document.getElementById('terminal-log-content');
           if (termLog) {
@@ -3364,6 +3399,8 @@
           }
           const fpsEls = document.querySelectorAll('.live-fps-display');
           fpsEls.forEach(el => { el.textContent = '0.0 FPS (Offline)'; });
+          const zoneBtn = document.getElementById('btn-confirm-zones');
+          if (zoneBtn) zoneBtn.disabled = true;
         });
     }
 
@@ -3515,6 +3552,27 @@
         sendControl('acknowledge');
       }
     });
+
+    function confirmZoneAlignment() {
+      const btn = document.getElementById('btn-confirm-zones');
+      if (btn) btn.disabled = true;
+      fetch('/api/zones/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      })
+        .then(r => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json();
+        })
+        .then(res => {
+          acknowledgeAlert(`✓ Zone Confirmation: ${res.message || 'Zones confirmed'}`);
+          pollTelemetry();
+        })
+        .catch(err => {
+          acknowledgeAlert(`✗ Zone Confirmation Failed: ${err.message || err}`);
+          if (btn) btn.disabled = false;
+        });
+    }
 
     function startLivePolling() {
       // Immediate first polls

@@ -32,6 +32,8 @@ class SafetyEvent:
     metadata: Dict[str, Any] = field(default_factory=dict)
     camera_motion: bool = False
     motion_reason: str = ""
+    zones_unverified: bool = False
+    zone_version: int = 1
 
     def __post_init__(self):
         # Never report exactly 100% (1.0) confidence; strictly cap at 0.99 and calibrate
@@ -54,6 +56,8 @@ class SafetyEvent:
             "evidence_frames": self.evidence_frames,
             "metadata": self.metadata,
             "camera_motion": self.camera_motion,
-            "motion_reason": self.motion_reason
+            "motion_reason": self.motion_reason,
+            "zones_unverified": self.zones_unverified,
+            "zone_version": self.zone_version
         }
 

@@ -275,6 +275,19 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
         </div>
     </div>
 
+    <!-- Adaptive Zones Unverified / Confirmation Banner -->
+    <div id="zone-unverified-banner" style="display: none; background: linear-gradient(90deg, #92400E, #78350F); border: 2px solid #F59E0B; border-radius: 8px; padding: 14px 20px; margin-bottom: 18px;">
+        <div class="alert-content">
+            <div class="alert-text">
+                <h4 id="zone-alert-title" style="color: #FEF3C7; margin: 0 0 4px 0; font-size: 16px;">⚠️ ZONES UNVERIFIED — CAMERA DRIFT DETECTED</h4>
+                <p id="zone-alert-body" style="color: #FDE68A; margin: 0; font-size: 13px;">Camera misalignment detected. Operator confirmation required to verify zones.</p>
+            </div>
+            <div>
+                <button id="btn-confirm-zones" class="btn btn-ack" style="background: #F59E0B; color: #18181B;" onclick="confirmZoneAlignment()">CONFIRM CURRENT ZONES</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Main Grid -->
     <div class="grid">
         <!-- Left: Live Video & Event Log -->
@@ -621,6 +634,22 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                     } else {
                         banner.style.display = 'none';
                     }
+
+                    // Adaptive Zones Unverified Banner
+                    const zoneBanner = document.getElementById('zone-unverified-banner');
+                    const zoneBtn = document.getElementById('btn-confirm-zones');
+                    const az = data.adaptive_zones;
+                    if (zoneBanner && az && (az.zones_unverified || az.requires_operator_confirmation || az.status === 'UNVERIFIED_REFERENCE' || az.status === 'ZONES UNVERIFIED')) {
+                        zoneBanner.style.display = 'block';
+                        const isUnverifiedRef = (az.status === 'UNVERIFIED_REFERENCE');
+                        document.getElementById('zone-alert-title').textContent = isUnverifiedRef
+                            ? '⚠️ UNVERIFIED REFERENCE FRAME — OPERATOR CONFIRMATION REQUIRED'
+                            : '⚠️ ZONES UNVERIFIED — CAMERA DRIFT DETECTED';
+                        document.getElementById('zone-alert-body').textContent = `Drift: ${(az.drift_px||0).toFixed(1)}px | Inliers: ${az.inliers||0} | Status: ${az.status}${az.failure_reason ? ' (' + az.failure_reason + ')' : ''}`;
+                        if (zoneBtn && !isBackendDead) zoneBtn.disabled = false;
+                    } else if (zoneBanner) {
+                        zoneBanner.style.display = 'none';
+                    }
                 })
                 .catch(err => {
                     console.debug('Telemetry poll error:', err);
@@ -699,6 +728,20 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
 
         function resetETS() {
             apiPost('/api/ets/reset');
+        }
+
+        function confirmZoneAlignment() {
+            const btn = document.getElementById('btn-confirm-zones');
+            if (btn) btn.disabled = true;
+            apiPost('/api/zones/confirm')
+                .then(res => {
+                    console.log('Zone alignment confirmed:', res);
+                    updateTelemetry();
+                })
+                .catch(err => {
+                    showErrorToast('Zone Confirmation Failed: ' + (err.message || err));
+                    if (btn && !isBackendDead) btn.disabled = false;
+                });
         }
 
         function setTrainState(state) {
@@ -816,6 +859,11 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
         data = request.get_json(silent=True) or {}
         active_hub.push_event(data)
         return jsonify({"status": "received"})
+
+    @app.route("/api/zones/confirm", methods=["POST"])
+    def api_zones_confirm():
+        """Operator confirmation of current or proposed zone alignment."""
+        return jsonify(active_hub.confirm_zone_alignment())
 
     return app
 

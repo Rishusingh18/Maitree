@@ -20,6 +20,7 @@ import cv2
 
 from metro_safety.config import load_config
 from metro_safety.zones.geometry import ZoneManager
+from metro_safety.zones.registration import AdaptiveZoneTracker, AlignmentStatus
 from metro_safety.perception.train_state import TrainState, SimulatedTrainStateProvider
 from metro_safety.perception.frame_source import create_frame_source, FrameSource, VideoFileSource
 from metro_safety.tracking.tracker import ByteTracker
@@ -61,6 +62,11 @@ def run_pipeline(
         resolved_source = cfg["system"].get("source", "http://192.168.1.32:8080/video")
 
     zm = ZoneManager(cfg["zones"])
+    zone_tracker = AdaptiveZoneTracker(
+        zone_manager=zm,
+        config=cfg,
+        reference_image_path=cfg.get("reference_frame")
+    )
     tracker = ByteTracker(
         track_high_thresh=cfg["tracking"].get("track_high_thresh", 0.22),
         track_low_thresh=cfg["tracking"].get("track_low_thresh", 0.12),
@@ -107,9 +113,12 @@ def run_pipeline(
                 l3_low_freq=buzzer_cfg.get("l3_low_freq", 1800),
                 l3_high_freq=buzzer_cfg.get("l3_high_freq", 2200)
             )
-            hub.set_hardware_components(buzzer=buzzer)
+            hub.set_hardware_components(buzzer=buzzer, zone_tracker=zone_tracker)
         except Exception as _b_err:
             buzzer = None
+            hub.set_hardware_components(zone_tracker=zone_tracker)
+    else:
+        hub.set_hardware_components(buzzer=buzzer, zone_tracker=zone_tracker)
 
     escalation = EscalationEngine(
         station_id=cfg["system"]["station_id"],
@@ -157,6 +166,8 @@ def run_pipeline(
     fps_history = []
     latency_history = []
     t_prev_frame = time.perf_counter()
+    last_zone_event_time = {}
+    zone_cooldown_sec = float(cfg.get("adaptive_zones", {}).get("unverified_zone_cooldown_sec", 4.0))
 
     try:
         while True:
@@ -178,6 +189,14 @@ def run_pipeline(
                 continue
 
             h, w = frame.shape[:2]
+
+            # Adaptive zone tracking: reference capture on first frame and demo mode toggle
+            if frame_idx == 0:
+                zone_tracker.on_first_frame(frame)
+
+            is_fallback = getattr(frame_source, "is_fallback", False)
+            is_demo = is_fallback or ("demo" in str(resolved_source).lower())
+            zone_tracker.set_demo_mode(is_demo)
 
             # Lazy initialize video writer if output path requested
             if output_video and writer is None:
@@ -219,10 +238,30 @@ def run_pipeline(
             # 2. Tracking
             tracked_dets = tracker.update(detections)
 
+            # Adaptive Zone Tracking: Non-blocking frame registration
+            person_boxes = [d.box for d in tracked_dets] if tracked_dets else [d.box for d in detections]
+            zone_tracker.submit_frame(frame, frame_idx, person_boxes, frame_ts)
+            reg_result = zone_tracker.get_latest_result()
+
             # 3. Behavior Events & Gestures
             rule_evs = rule_clf.process_frame(frame_idx, frame_ts, tracked_dets, zm, train_state)
             gest_evs = gesture_det.process_frame(frame_idx, frame_ts, tracked_dets, zm, train_state)
             all_evs = rule_evs + gest_evs
+
+            # Tag events with zone tracking metadata & apply dual cooldown when unverified
+            filtered_evs = []
+            for ev in all_evs:
+                ev.zones_unverified = reg_result.zones_unverified
+                ev.zone_version = reg_result.zone_version
+                if reg_result.zones_unverified:
+                    z_name = getattr(ev, "zone", "platform")
+                    ev_type_name = getattr(getattr(ev, "event_type", None), "name", str(getattr(ev, "event_type", "EVENT")))
+                    z_key = (z_name, ev_type_name)
+                    if frame_ts - last_zone_event_time.get(z_key, 0.0) < zone_cooldown_sec:
+                        continue
+                    last_zone_event_time[z_key] = frame_ts
+                filtered_evs.append(ev)
+            all_evs = filtered_evs
 
             # Per-frame escalation lifecycle: clear confirmed resolved tracks (present in safe platform with no active hazards)
             active_hazard_tracks = {ev.track_id for ev in all_evs if hasattr(ev, 'track_id')}
@@ -253,6 +292,8 @@ def run_pipeline(
                 dec = escalation.evaluate(event=ev, train_state=train_state, current_time=frame_ts, snapshot=frame)
                 if current_decision is None or SEVERITY_PRIORITY.get(dec.severity, 0) > SEVERITY_PRIORITY.get(current_decision.severity, 0):
                     current_decision = dec
+                if reg_result.zones_unverified and not dec.action_taken.startswith("[ZONES UNVERIFIED]"):
+                    dec.action_taken = f"[ZONES UNVERIFIED] {dec.action_taken}"
                 ev_data = ev.to_dict() if hasattr(ev, 'to_dict') else {}
                 log_entry = {
                     "frame": frame_idx,
@@ -262,7 +303,9 @@ def run_pipeline(
                     "action": dec.action_taken,
                     "buzzer_active": dec.buzzer_active,
                     "ets_triggered": dec.ets_triggered,
-                    "latency_ms": dec.latency_ms
+                    "latency_ms": dec.latency_ms,
+                    "zones_unverified": reg_result.zones_unverified,
+                    "zone_version": reg_result.zone_version
                 }
                 events_logged.append(log_entry)
 
@@ -279,7 +322,9 @@ def run_pipeline(
                         "confidence": getattr(ev, "confidence", 0.95),
                         "action": dec.action_taken,
                         "is_demo": False,
-                        "session_id": hub.session_id
+                        "session_id": hub.session_id,
+                        "zones_unverified": reg_result.zones_unverified,
+                        "zone_version": reg_result.zone_version
                     })
                 except Exception:
                     pass
@@ -301,7 +346,15 @@ def run_pipeline(
             avg_lat_ms = float(np.mean(latency_history))
 
             # 5. Visual Rendering & Live Annotation
-            annotated = zm.draw_zones(frame, alpha=0.25)
+            status_badge_text = f"ALIGN: {reg_result.status.value} | DRIFT: {reg_result.drift_px:.1f}px | INL: {reg_result.inlier_count} | V:{reg_result.zone_version}"
+            annotated = zm.draw_zones(
+                frame,
+                alpha=0.25,
+                unverified=reg_result.zones_unverified,
+                draw_baseline=True,
+                drift_px=reg_result.drift_px,
+                status_badge=status_badge_text
+            )
 
             # Draw tracked persons
             for det in tracked_dets:
@@ -401,6 +454,11 @@ def run_pipeline(
 
     finally:
         frame_source.release()
+        if zone_tracker:
+            try:
+                zone_tracker.stop()
+            except Exception:
+                pass
         if buzzer:
             try:
                 buzzer.deactivate()

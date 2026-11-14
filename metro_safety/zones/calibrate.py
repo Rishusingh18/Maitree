@@ -7,6 +7,7 @@
 """
 import shutil
 import argparse
+import json
 from pathlib import Path
 import yaml
 import cv2
@@ -239,16 +240,33 @@ def calibrate_zones(
             except Exception as e:
                 print(f"[Backup Warning] Could not create backup: {e}")
 
+            # Save reference frame image and reference polygons
+            ref_img_path = Path("data/reference_frame.jpg")
+            ref_img_path.parent.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(ref_img_path), reference_frame)
+
+            ref_poly_path = Path("data/reference_polygons.json")
+            with open(ref_poly_path, "w", encoding="utf-8") as rf:
+                json.dump({
+                    "zones": saved_zones,
+                    "resolution": [int(w), int(h)],
+                    "timestamp": time.time(),
+                    "source": source_uri
+                }, rf, indent=2)
+
             # Update config file
             cfg["zones"] = saved_zones
             h, w = reference_frame.shape[:2]
             cfg["system"]["input_resolution"] = [int(w), int(h)]
             cfg["system"]["source"] = source_uri
+            cfg["reference_frame"] = "data/reference_frame.jpg"
 
             with open(cfg_file, "w", encoding="utf-8") as f:
                 yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
 
-            print(f"\n[SUCCESS] Calibrated & validated zones successfully saved into: {cfg_file}")
+            print(f"\n[SUCCESS] Calibrated zones & reference frame saved into: {cfg_file}")
+            print(f"Reference frame image saved to: {ref_img_path}")
+            print(f"Reference polygons saved to: {ref_poly_path}")
             print(f"Resolution set to: {w}x{h}")
             break
 
