@@ -1,40 +1,44 @@
 import os
-from pydantic import BaseSettings, Field, validator
+from typing import Optional
 
-class Settings(BaseSettings):
-    """Application configuration loaded from environment variables.
-    All settings have sensible defaults for local development.
-    """
+try:
+    from pydantic_settings import BaseSettings, SettingsConfigDict
+    from pydantic import Field, field_validator
 
-    # General
-    APP_NAME: str = Field(default="MetroSafetyAPI", description="Application name")
-    DEBUG: bool = Field(default=False, description="Enable debug mode")
-    LOG_LEVEL: str = Field(default="info", description="Logging level")
+    class Settings(BaseSettings):
+        model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # Server
-    HOST: str = Field(default="0.0.0.0", description="Host address")
-    PORT: int = Field(default=8000, description="Port to listen on")
+        APP_NAME: str = Field(default="MetroSafetyAPI", description="Application name")
+        DEBUG: bool = Field(default=False, description="Enable debug mode")
+        LOG_LEVEL: str = Field(default="info", description="Logging level")
+        HOST: str = Field(default="0.0.0.0", description="Host address")
+        PORT: int = Field(default=8000, description="Port to listen on")
+        API_KEY: str = Field(default="", description="Simple API key for auth")
+        CROSSING_MODEL_PATH: str = Field(default="backend/models/crossing_model.pt", description="Crossing model path")
+        GESTURE_MODEL_PATH: str = Field(default="backend/models/gesture_model.pt", description="Gesture model path")
+        BEHAVIOUR_MODEL_PATH: str = Field(default="backend/models/behaviour_model.pt", description="Behaviour model path")
+        MAX_WORKERS: int = Field(default=4, description="Thread pool size")
 
-    # Security
-    API_KEY: str = Field(default="", description="Simple API key for auth. Set in .env for production")
+        @field_validator("LOG_LEVEL")
+        @classmethod
+        def _validate_log_level(cls, v: str) -> str:
+            allowed = {"debug", "info", "warning", "error", "critical"}
+            return v.lower() if v.lower() in allowed else "info"
 
-    # Model paths
-    CROSSING_MODEL_PATH: str = Field(default="models/crossing_model.pt", description="Path to crossing detection model")
-    GESTURE_MODEL_PATH: str = Field(default="models/gesture_model.pt", description="Path to gesture / threat detection model")
+    settings = Settings()
 
-    # Inference settings
-    MAX_WORKERS: int = Field(default=4, description="Thread pool size for async inference")
+except Exception:
+    # Graceful fallback to standard dataclass / os.getenv
+    class Settings:
+        APP_NAME: str = os.getenv("APP_NAME", "MetroSafetyAPI")
+        DEBUG: bool = os.getenv("DEBUG", "False").lower() in ("true", "1")
+        LOG_LEVEL: str = os.getenv("LOG_LEVEL", "info")
+        HOST: str = os.getenv("HOST", "0.0.0.0")
+        PORT: int = int(os.getenv("PORT", "8000"))
+        API_KEY: str = os.getenv("API_KEY", "")
+        CROSSING_MODEL_PATH: str = os.getenv("CROSSING_MODEL_PATH", "backend/models/crossing_model.pt")
+        GESTURE_MODEL_PATH: str = os.getenv("GESTURE_MODEL_PATH", "backend/models/gesture_model.pt")
+        BEHAVIOUR_MODEL_PATH: str = os.getenv("BEHAVIOUR_MODEL_PATH", "backend/models/behaviour_model.pt")
+        MAX_WORKERS: int = int(os.getenv("MAX_WORKERS", "4"))
 
-    @validator("LOG_LEVEL")
-    def _validate_log_level(cls, v: str) -> str:
-        allowed = {"debug", "info", "warning", "error", "critical"}
-        if v.lower() not in allowed:
-            raise ValueError(f"Invalid LOG_LEVEL: {v}. Choose from {allowed}")
-        return v.lower()
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-
-# Instantiate a singleton settings object that can be imported elsewhere
-settings = Settings()
+    settings = Settings()

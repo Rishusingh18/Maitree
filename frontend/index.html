@@ -1150,11 +1150,10 @@
           </div>
 
           <div class="aspect-video bg-black rounded-md relative overflow-hidden border border-[var(--border)]">
-            <img src="assets/cam101_rajiv_chowk.jpg" alt="Incident Feed" class="w-full h-full object-cover">
-            <div class="absolute border-2 border-red-500 bg-red-500/20 rounded-xs" style="top: 48%; left: 32%; width: 28%; height: 42%;">
-              <div class="absolute -top-5 left-0 bg-red-600 text-white px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap">
-                Track Intrusion (98.4%)
-              </div>
+            <img src="/video_feed" alt="Incident Feed" class="w-full h-full object-cover" onerror="if(!this.src.includes('assets/')){this.src='assets/cam101_rajiv_chowk.jpg';}">
+            <div class="absolute top-2 left-2 bg-black/70 backdrop-blur-xs px-2 py-0.5 rounded text-[11px] text-white flex items-center space-x-2">
+              <span id="cam101-live-status" class="text-amber-400">● Connecting...</span>
+              <span>| CAM-101</span>
             </div>
           </div>
 
@@ -2413,7 +2412,7 @@
     let selectedLineFilter = 'ALL';
 
     const cctvCameras = [
-      { id: 'CAM-101', name: 'Rajiv Chowk Plat 2', line: 'Yellow Line', lat: '14 ms', fps: '25', res: '1080p', alert: true, alertType: 'Track Intrusion', conf: '98.4%', img: 'assets/cam101_rajiv_chowk.jpg' },
+      { id: 'CAM-101 (LIVE CCTV)', name: 'Rajiv Chowk Plat 2', line: 'Yellow Line', lat: 'Live', fps: '30', res: 'HD', alert: false, alertType: 'Platform AI Guard', conf: 'Live', img: '/video_feed', fallback: 'assets/cam101_rajiv_chowk.jpg' },
       { id: 'CAM-102', name: 'Kashmere Gate Plat 1', line: 'Red Line', lat: '12 ms', fps: '25', res: '1080p', alert: false, alertType: 'Platform Edge', conf: '94.1%', img: 'assets/cam102_kashmere_gate.jpg' },
       { id: 'CAM-103', name: 'Central Secretariat Plat 2', line: 'Violet Line', lat: '16 ms', fps: '25', res: '1080p', alert: false, alertType: 'Nominal', conf: '99.1%', img: 'assets/cam103_central_sec.jpg' },
       { id: 'CAM-104', name: 'Mandi House Plat 3', line: 'Blue Line', lat: '13 ms', fps: '25', res: '1080p', alert: false, alertType: 'Nominal', conf: '99.5%', img: 'assets/cam104_mandi_house.jpg' },
@@ -2685,7 +2684,7 @@
             </div>
 
             <div class="aspect-video bg-black rounded-md relative overflow-hidden group">
-              <img src="${cam.img}" alt="${cam.name}" class="w-full h-full object-cover">
+              <img src="${cam.img}" alt="${cam.name}" class="w-full h-full object-cover" onerror="if(this.src && !this.src.includes('assets/')){this.src='${cam.fallback || cam.img}';}">
               
               <!-- Clean minimal OSD -->
               <div class="absolute top-2 left-2 bg-black/70 backdrop-blur-xs px-2 py-0.5 rounded text-[11px] text-white flex items-center space-x-2">
@@ -3238,7 +3237,232 @@
       renderIncidentsTable();
       renderCameraTable();
       updateThemeButtons();
+
+      // Start live backend polling after DOM is ready
+      startLivePolling();
     });
+
+    // ===== LIVE BACKEND INTEGRATION =====
+    // Maps event_type strings from ML pipeline to human-readable classification names
+    const EVENT_TYPE_LABELS = {
+      'YELLOW_LINE_CROSSING': 'Yellow Line Overstep',
+      'TRACK_INTRUSION': 'Track Intrusion',
+      'TRACK_JUMP': 'Track Jump',
+      'DISTRESS_GESTURE': 'Distress Gesture',
+      'VIOLENCE': 'Violence Detected',
+      'FIGHT': 'Fight Detected',
+      'THEFT': 'Theft Detected',
+      'FALL': 'Person Fall',
+      'CROWD_SURGE': 'Crowd Density Surge',
+      'ALARM_ACKNOWLEDGED': 'Alarm Acknowledged',
+      'ETS_MANUAL_TRIP': 'ETS Manually Tripped',
+      'ETS_RESET': 'ETS Reset',
+      'BUZZER_MUTED': 'Buzzer Muted',
+      'BUZZER_UNMUTED': 'Buzzer Unmuted',
+    };
+
+    // Maps severity level strings to badge CSS classes
+    function sevBadgeClass(sev) {
+      if (!sev) return 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300';
+      const s = sev.toUpperCase();
+      if (s === 'L3' || s === 'CRITICAL') return 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400';
+      if (s === 'L2' || s === 'HIGH') return 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400';
+      if (s === 'L1' || s === 'MEDIUM') return 'bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400';
+      return 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300';
+    }
+
+    // Telemetry polling — 1 second interval
+    function pollTelemetry() {
+      fetch('/api/telemetry')
+        .then(r => r.json())
+        .then(data => {
+          // Update live banner in sidebar / header if elements exist
+          const fpsEls = document.querySelectorAll('.live-fps-display');
+          fpsEls.forEach(el => { el.textContent = (data.live_fps || 0).toFixed(1) + ' FPS'; });
+
+          const latEls = document.querySelectorAll('.live-latency-display');
+          latEls.forEach(el => { el.textContent = (data.live_latency_ms || 0).toFixed(0) + ' ms'; });
+
+          const trainEls = document.querySelectorAll('.live-train-state-display');
+          trainEls.forEach(el => { el.textContent = data.train_state || 'UNKNOWN'; });
+
+          const etsEls = document.querySelectorAll('.live-ets-display');
+          etsEls.forEach(el => {
+            el.textContent = data.ets_status || 'DISENGAGED';
+            el.className = el.className.replace(/text-(red|emerald|amber)-\d+/g, '');
+            if (data.ets_status === 'ENGAGED') el.classList.add('text-red-600');
+            else if (data.ets_status === 'ARMED') el.classList.add('text-amber-600');
+            else el.classList.add('text-emerald-600');
+          });
+
+          // Update CAM-101 status chip (live / fallback)
+          const cam101status = document.getElementById('cam101-live-status');
+          if (cam101status) {
+            if (data.is_online && !data.is_fallback) {
+              cam101status.textContent = '● Live Camera';
+              cam101status.className = 'text-emerald-400';
+            } else if (data.is_fallback) {
+              cam101status.textContent = '● Demo Clip (Fallback)';
+              cam101status.className = 'text-amber-400';
+            } else {
+              cam101status.textContent = '● Connecting...';
+              cam101status.className = 'text-slate-400';
+            }
+          }
+
+          // Update the diagnostic terminal log
+          const termLog = document.getElementById('terminal-log-content');
+          if (termLog) {
+            const ts = new Date().toLocaleTimeString('en-GB');
+            const online = data.is_online ? 'ONLINE' : 'OFFLINE';
+            const fallback = data.is_fallback ? ' [FALLBACK]' : '';
+            const line = document.createElement('div');
+            line.textContent = `[${ts}] CCTV:${online}${fallback} | FPS:${(data.live_fps||0).toFixed(1)} | Lat:${(data.live_latency_ms||0).toFixed(0)}ms | Train:${data.train_state||'?'} | ETS:${data.ets_status||'?'}`;
+            termLog.prepend(line);
+            // Keep at most 50 lines
+            while (termLog.children.length > 50) termLog.removeChild(termLog.lastChild);
+          }
+        })
+        .catch(() => {}); // Silent failure — backend not yet up
+    }
+
+    // Events polling — 2 second interval
+    let _lastEventIds = new Set();
+    function pollEvents() {
+      fetch('/api/events?limit=50')
+        .then(r => r.json())
+        .then(data => {
+          const events = data.events || [];
+          if (!events.length) return;
+
+          // Convert backend events → mockIncidents format
+          const liveIncidents = events
+            .filter(ev => !['ALARM_ACKNOWLEDGED', 'BUZZER_MUTED', 'BUZZER_UNMUTED', 'BUZZER_TEST_L1', 'BUZZER_TEST_L2', 'BUZZER_TEST_L3'].includes(ev.event_type))
+            .map((ev, idx) => {
+              const sev = ev.severity || 'L1';
+              const sevLabel = sev === 'L3' ? 'CRITICAL' : sev === 'L2' ? 'HIGH' : sev === 'L1' ? 'MEDIUM' : 'LOW';
+              return {
+                id: ev.id || `EV-${idx}`,
+                time: ev.time_str || new Date(ev.timestamp * 1000).toLocaleTimeString('en-GB'),
+                line: 'Yellow Line',
+                station: 'Rajiv Chowk',
+                platform: 'Platform 2',
+                classification: EVENT_TYPE_LABELS[ev.event_type] || ev.event_type,
+                severity: sevLabel,
+                status: 'ACTIVE',
+                operator: 'AI Vision System',
+                _raw: ev
+              };
+            });
+
+          if (liveIncidents.length > 0) {
+            // Replace mock data with live data, keeping static ones as fallback for empty periods
+            mockIncidents.length = 0;
+            liveIncidents.forEach(i => mockIncidents.push(i));
+
+            // Notify about new events
+            const newIds = new Set(liveIncidents.map(i => i.id));
+            const brandNew = liveIncidents.filter(i => !_lastEventIds.has(i.id));
+            _lastEventIds = newIds;
+
+            if (brandNew.length > 0) {
+              const newest = brandNew[0];
+              acknowledgeAlert(`⚠ AI Detection: ${newest.classification} at ${newest.time}`);
+            }
+
+            // Re-render tables that use mockIncidents
+            const activeTab = document.querySelector('.tab-content.active');
+            if (activeTab) {
+              const tabId = activeTab.id.replace('view-', '');
+              if (tabId === 'overview') { renderOverviewIncidents(); renderOverviewActivity(); }
+              if (tabId === 'incidents') renderIncidentsTable();
+            }
+          }
+
+          // Always update activity list with recent events
+          const activityList = document.getElementById('overview-activity-list');
+          if (activityList && events.length > 0) {
+            activityList.innerHTML = events.slice(0, 8).map(ev => {
+              const isCritical = ev.severity === 'L3' || ev.severity === 'CRITICAL';
+              const isAck = ev.event_type && ev.event_type.includes('ACK');
+              const cls = isCritical ? 'text-red-600 dark:text-red-400' : isAck ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400';
+              const label = EVENT_TYPE_LABELS[ev.event_type] || ev.event_type || 'Event';
+              const ts = ev.time_str || '';
+              return `<div class="flex items-start space-x-2 p-2 bg-[var(--surface-secondary)] rounded-md">
+                <span class="${cls} font-bold mt-0.5">●</span>
+                <div class="flex-1">
+                  <div class="${cls} font-medium text-[11px]">${ts} · ${label}</div>
+                  <div class="text-[var(--muted-foreground)] text-[11px] mt-0.5">${ev.action || ev.zone || ''}</div>
+                </div>
+              </div>`;
+            }).join('');
+          }
+        })
+        .catch(() => {});
+    }
+
+    // Wire operator control buttons to backend /api/control
+    function sendControl(action, value) {
+      const payload = { action };
+      if (value !== undefined) payload.value = value;
+      fetch('/api/control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+        .then(r => r.json())
+        .then(res => {
+          if (res.status === 'ok') {
+            acknowledgeAlert(`✓ Control: ${action} → ${res.message || JSON.stringify(res)}`);
+          } else {
+            acknowledgeAlert(`✗ Control failed: ${res.message || 'Unknown error'}`);
+          }
+        })
+        .catch(err => acknowledgeAlert(`✗ Control error: ${err}`));
+    }
+
+    // Override confirmTripSwitch to wire ETS to backend
+    const _origConfirmTripSwitch = confirmTripSwitch;
+    window.confirmTripSwitch = function() {
+      openConfirmModal(
+        'Third Rail Traction Cutoff',
+        'Are you sure you want to de-energize the 750V DC traction power supply for Rajiv Chowk Platform 2?',
+        () => {
+          sendControl('ets_trip');
+          const chk = document.getElementById('chk-ets');
+          if (chk) chk.checked = true;
+        }
+      );
+    };
+
+    // Override simulateInterlockAction to also call backend buzzer/alarm
+    const _origSimulateInterlockAction = simulateInterlockAction;
+    window.simulateInterlockAction = function(actionType) {
+      _origSimulateInterlockAction(actionType);
+      if (actionType === 'PA_SAFETY_CHIME') {
+        sendControl('test_beep', 'L1');
+      } else if (actionType === 'SIGNAL_RED_HOLD') {
+        sendControl('set_train_state', 'APPROACHING');
+      }
+    };
+
+    // Global keyboard shortcut: Ctrl+Shift+A = acknowledge alarm
+    window.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'A') {
+        e.preventDefault();
+        sendControl('acknowledge');
+      }
+    });
+
+    function startLivePolling() {
+      // Immediate first polls
+      pollTelemetry();
+      pollEvents();
+
+      // Recurring polls
+      setInterval(pollTelemetry, 1000);
+      setInterval(pollEvents, 2000);
+    }
   </script>
 </body>
 </html>

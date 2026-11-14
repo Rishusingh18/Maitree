@@ -119,7 +119,11 @@ def run_pipeline(
     writer = None
     window_name = f"DMRC CCTV Safety System - [{cfg['system']['camera_id']}] (Press 'q' to stop)"
     if show_window:
-        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        try:
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        except (cv2.error, Exception) as e:
+            print(f"[Pipeline] [Notice] GUI window unavailable ({e}). Automatically switching to headless mode.")
+            show_window = False
 
     events_logged = []
     frame_idx = 0
@@ -321,7 +325,10 @@ def run_pipeline(
         if writer:
             writer.release()
         if show_window:
-            cv2.destroyAllWindows()
+            try:
+                cv2.destroyAllWindows()
+            except Exception:
+                pass
 
     # Save Event Log
     out_log_path = Path(output_log)
