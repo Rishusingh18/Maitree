@@ -77,6 +77,7 @@ class AbandonedObjectDetector:
         self.cached_raw_detections: List[Dict[str, Any]] = []
         self._last_inference_frame: int = -1
         self._last_inference_ts: float = 0.0
+        self._last_success_ts: float = 0.0
 
         if self._obj_detector is None:
             self._init_detector()
@@ -114,8 +115,8 @@ class AbandonedObjectDetector:
             (detections, is_fresh)
         """
         now = timestamp if timestamp is not None else time.time()
-        # Bound cached detection reuse: expire after 2.5s
-        if self._last_inference_ts > 0 and (now - self._last_inference_ts) > 2.5:
+        # Bound cached detection reuse: expire after 2.5s from last successful inference
+        if self._last_success_ts > 0 and (now - self._last_success_ts) > 2.5:
             self.cached_raw_detections = []
 
         should_run = (self._last_inference_frame < 0) or ((frame_idx - self._last_inference_frame) >= self.detect_interval_frames)
@@ -153,6 +154,7 @@ class AbandonedObjectDetector:
                             "class": cname
                         })
             self.cached_raw_detections = raw
+            self._last_success_ts = now
             return raw, True
         except Exception:
             return list(self.cached_raw_detections), False
@@ -233,7 +235,8 @@ class AbandonedObjectDetector:
         tracked_persons: List[Detection],
         zone_manager: ZoneManager,
         train_state: str = "ABSENT",
-        synthetic_objects: Optional[List[Dict[str, Any]]] = None
+        synthetic_objects: Optional[List[Dict[str, Any]]] = None,
+        alert_enabled: bool = True
     ) -> List[SafetyEvent]:
         """Evaluate unattended bags against tracked persons."""
         events: List[SafetyEvent] = []
@@ -307,6 +310,8 @@ class AbandonedObjectDetector:
                 obj.unattended_duration = round(timestamp - obj.unattended_start_ts, 1)
 
                 if obj.unattended_duration >= self.unattended_sec:
+                    if not alert_enabled:
+                        continue
                     # Capture snapshot crop if frame is available
                     if frame is not None and frame.size > 0 and not obj.snapshot_path:
                         try:

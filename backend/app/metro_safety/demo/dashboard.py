@@ -854,28 +854,65 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
 
     @app.route("/api/events")
     def api_events():
-        events = active_hub.get_events(limit=50)
+        tel = active_hub.get_telemetry()
+        imported_session = tel.get("session_id") or active_hub.session_id
+        events = active_hub.get_events(limit=50, session_id=imported_session)
         return jsonify({
             "events": events,
-            "telemetry": active_hub.get_telemetry()
+            "telemetry": tel
         })
 
     @app.route("/api/events/stream")
     def api_events_stream():
         """Server-Sent Events endpoint pushing events immediately as they occur."""
         q = active_hub.add_sse_listener()
+        from metro_safety.demo.hub import EVENTS_CACHE_PATH
 
         def stream():
+            last_file_pos = 0
+            if EVENTS_CACHE_PATH.exists():
+                try:
+                    last_file_pos = EVENTS_CACHE_PATH.stat().st_size
+                except Exception:
+                    pass
             try:
                 # Send initial ping
                 yield "data: {\"type\": \"init\"}\n\n"
+                idle_ticks = 0
                 while True:
+                    # 1. In-process queue check
+                    got_event = False
                     try:
-                        ev = q.get(timeout=25.0)
+                        ev = q.get(timeout=0.4)
                         yield f"data: {json.dumps(ev)}\n\n"
+                        got_event = True
+                        idle_ticks = 0
                     except Exception:
-                        # Heartbeat comment to keep HTTP connection alive
+                        pass
+
+                    # 2. Cross-process disk polling bridge if running in separate process from producer
+                    if not got_event and EVENTS_CACHE_PATH.exists():
+                        try:
+                            curr_size = EVENTS_CACHE_PATH.stat().st_size
+                            if curr_size > last_file_pos:
+                                with open(EVENTS_CACHE_PATH, "r", encoding="utf-8") as f:
+                                    f.seek(last_file_pos)
+                                    new_lines = f.readlines()
+                                    last_file_pos = f.tell()
+                                for line in new_lines:
+                                    line_str = line.strip()
+                                    if line_str:
+                                        disk_ev = json.loads(line_str)
+                                        if active_hub.producer_pid != os.getpid():
+                                            yield f"data: {json.dumps(disk_ev)}\n\n"
+                                            idle_ticks = 0
+                        except Exception:
+                            pass
+
+                    idle_ticks += 1
+                    if idle_ticks >= 60:  # ~24 seconds without events
                         yield ": keep-alive\n\n"
+                        idle_ticks = 0
             finally:
                 active_hub.remove_sse_listener(q)
 

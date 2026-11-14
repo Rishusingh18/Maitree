@@ -194,8 +194,8 @@ class STGNFEvaluator:
         if track_id not in self._track_buffers:
             self._track_buffers[track_id] = []
         buf = self._track_buffers[track_id]
-        buf.append(keypoints)
-        if len(buf) > self.window_len * 2:
+        buf.append(np.array(keypoints, copy=True))
+        if len(buf) > self.window_len:
             buf.pop(0)
 
     def evaluate_track(self, track_id: int) -> Tuple[bool, float, float]:

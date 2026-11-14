@@ -143,7 +143,8 @@ class PersonDownDetector:
                     "last_seen_ts": st.last_seen_ts,
                     "linked_fall_id": st.linked_fall_id,
                     "l1_alerted": st.l1_alerted,
-                    "l2_alerted": st.l2_alerted
+                    "l2_alerted": st.l2_alerted,
+                    "recent_torso_pts": list(st.recent_torso_pts)
                 })
             del self.track_states[dead_id]
 
@@ -191,7 +192,8 @@ class PersonDownDetector:
                         last_position=foot,
                         linked_fall_id=reassoc["linked_fall_id"],
                         l1_alerted=reassoc["l1_alerted"],
-                        l2_alerted=reassoc["l2_alerted"]
+                        l2_alerted=reassoc["l2_alerted"],
+                        recent_torso_pts=list(reassoc.get("recent_torso_pts", []))
                     )
                 else:
                     linked_f = active_falls.get(tid)
@@ -221,14 +223,15 @@ class PersonDownDetector:
             if len(state.recent_torso_pts) > 30:
                 state.recent_torso_pts.pop(0)
 
-            # Compute motion velocity over recent 1.5 seconds summing consecutive path displacements
+            # Compute motion velocity over recent 1.5 seconds summing consecutive path displacements with jitter deadband
             recent_window = [p for p in state.recent_torso_pts if (timestamp - p[2]) <= 1.5]
             if len(recent_window) >= 2:
                 dt = max(0.1, recent_window[-1][2] - recent_window[0][2])
-                path_dist = sum(
-                    math.hypot(recent_window[k + 1][0] - recent_window[k][0], recent_window[k + 1][1] - recent_window[k][1])
-                    for k in range(len(recent_window) - 1)
-                )
+                path_dist = 0.0
+                for k in range(len(recent_window) - 1):
+                    d_step = math.hypot(recent_window[k + 1][0] - recent_window[k][0], recent_window[k + 1][1] - recent_window[k][1])
+                    if d_step > 1.2:  # deadband for sub-pixel / 1px detection jitter
+                        path_dist += d_step
                 state.motion_energy = round(path_dist / dt, 2)
             else:
                 state.motion_energy = 0.0

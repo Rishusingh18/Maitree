@@ -141,7 +141,8 @@ class TrackStateMachine:
             drop_deltas = []
             for i in range(1, min(6, len(self.observations))):
                 gap = self.observations[-i].frame_idx - self.observations[-i-1].frame_idx
-                if gap > 3:
+                # Preserve fall evidence across stride-four detector sampling (gap <= 5)
+                if gap > 5:
                     drop_deltas.append(0.0)
                 else:
                     dy = (self.observations[-i].torso_point[1] - self.observations[-i-1].torso_point[1]) / max(1, gap)

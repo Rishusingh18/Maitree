@@ -25,6 +25,7 @@ class DwellTrackState:
     positions: List[Tuple[float, float, float]] = field(default_factory=list) # (x, y, ts)
     l1_alerted: bool = False
     l2_alerted: bool = False
+    l2_trusted_alerted: bool = False
 
 
 class LoiteringDetector:
@@ -50,7 +51,9 @@ class LoiteringDetector:
         timestamp: float,
         tracked_dets: List[Detection],
         zone_manager: ZoneManager,
-        train_state: str = "ABSENT"
+        train_state: str = "ABSENT",
+        camera_motion: bool = False,
+        zones_unverified: bool = False
     ) -> List[SafetyEvent]:
         """Evaluate dwell and loitering times for active tracks."""
         events: List[SafetyEvent] = []
@@ -58,13 +61,14 @@ class LoiteringDetector:
 
         # Check train suppression: if train is approaching or present/docked, loitering is suppressed
         effective_ts = str(train_state).upper()
-        if self.train_suppression and effective_ts in ["APPROACHING", "PRESENT", "DOCKED", "ARRIVING"]:
+        if self.train_suppression and effective_ts in ["APPROACHING", "PRESENT", "DOCKED", "ARRIVING", "STOPPED_DOORS_OPEN"]:
             # Pause/reset dwell timer during train suppression so post-departure does not immediately fire
             for tid, st in self.track_states.items():
                 st.anchor_start_ts = timestamp
                 st.dwell_duration = 0.0
                 st.l1_alerted = False
                 st.l2_alerted = False
+                st.l2_trusted_alerted = False
             return events
 
         for det in tracked_dets:
@@ -110,8 +114,9 @@ class LoiteringDetector:
                 # Within dwell radius: advance dwell timer
                 st.dwell_duration = round(timestamp - st.anchor_start_ts, 1)
 
+                is_low_trust = bool(camera_motion or zones_unverified)
                 if st.dwell_duration >= self.dwell_t2_sec:
-                    if not st.l2_alerted:
+                    if not st.l2_alerted or (not getattr(st, "l2_trusted_alerted", False) and not is_low_trust):
                         # L2 Loitering Security Alert
                         ev = SafetyEvent(
                             event_type=EventType.LOITERING,
@@ -132,6 +137,8 @@ class LoiteringDetector:
                             }
                         )
                         ev.is_anomaly = True
+                        if not is_low_trust:
+                            st.l2_trusted_alerted = True
                         st.l2_alerted = True
                         events.append(ev)
 
@@ -167,6 +174,7 @@ class LoiteringDetector:
                 st.dwell_duration = 0.0
                 st.l1_alerted = False
                 st.l2_alerted = False
+                st.l2_trusted_alerted = False
 
         # Prune inactive tracks
         dead_tids = [tid for tid in self.track_states if tid not in current_tids]

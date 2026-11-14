@@ -67,11 +67,9 @@ class EscalationEngine:
 
     def _activate_buzzer(self, pattern: str):
         # Prevent overriding continuous emergency siren with pulsed warning
-        has_critical = any(
-            h in [EventType.ACCIDENTAL_FALL, EventType.DELIBERATE_JUMP]
-            for h in self.active_audible_hazards.values()
-        )
-        if has_critical and pattern in ["PULSED", "PULSED_FAST"]:
+        # Only preserve CONTINUOUS_HIGH if the buzzer is actively sounding an L3 continuous siren
+        has_critical_siren = getattr(self.buzzer, "_current_pattern", None) == "L3"
+        if has_critical_siren and pattern in ["PULSED", "PULSED_FAST"]:
             return  # keep CONTINUOUS_HIGH active
         self.buzzer.activate(self.platform_id, pattern=pattern)
 
@@ -255,7 +253,7 @@ class EscalationEngine:
                 reason = getattr(event, 'motion_reason', 'camera motion') if is_camera_moving else 'unverified zones'
                 action_msg = f"LOW TRUST ({reason}): {action_msg}"
                 buzzer_active = False
-                if event.track_id in self.active_audible_hazards:
+                if self.active_audible_hazards.get(event.track_id) == ev_type:
                     del self.active_audible_hazards[event.track_id]
                     if not self.active_audible_hazards and not self.active_intrusions:
                         self.buzzer.deactivate(self.platform_id)

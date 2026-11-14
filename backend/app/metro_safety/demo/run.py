@@ -140,6 +140,9 @@ def run_pipeline(
         buzzer=buzzer
     )
     train_state = TrainState(train_state_val)
+    if hasattr(hub, "train_state_provider") and hub.train_state_provider:
+        hub.train_state_provider.set_state(train_state, platform_id=cfg["system"]["platform_id"])
+    hub.set_train_state(train_state.value, platform_id=cfg["system"]["platform_id"])
 
     # Initialize FrameSource (threaded, buffer size 1, auto-reconnect, with fallback)
     print(f"[Pipeline] Initializing FrameSource for: {resolved_source}")
@@ -260,10 +263,37 @@ def run_pipeline(
             cmd_path = Path("data/cache/zone_confirm.cmd")
             if cmd_path.exists():
                 try:
+                    cmd_content = cmd_path.read_text(encoding="utf-8")
+                    cmd_data = json.loads(cmd_content)
                     cmd_path.unlink()
-                    c_ok, c_msg = zone_tracker.confirm_alignment()
-                    resp_path = Path("data/cache/zone_confirm.resp")
-                    resp_path.write_text(json.dumps({"status": "ok" if c_ok else "error", "message": c_msg}), encoding="utf-8")
+                    req_id = cmd_data.get("req_id")
+                    cmd_ts = float(cmd_data.get("timestamp", 0))
+                    if (time.time() - cmd_ts) <= 2.0:
+                        c_ok, c_msg = zone_tracker.confirm_alignment()
+                        resp_path = Path("data/cache/zone_confirm.resp")
+                        resp_path.write_text(json.dumps({
+                            "req_id": req_id,
+                            "status": "ok" if c_ok else "error",
+                            "message": c_msg
+                        }), encoding="utf-8")
+                    else:
+                        logger.warning(f"[Pipeline] Discarding timed-out zone confirmation command: req_id={req_id}")
+                except Exception:
+                    pass
+
+            # Check for cross-process buzzer control command (acknowledge / mute)
+            buzzer_cmd = Path("data/cache/buzzer_control.cmd")
+            if buzzer_cmd.exists():
+                try:
+                    b_content = buzzer_cmd.read_text(encoding="utf-8")
+                    b_data = json.loads(b_content)
+                    buzzer_cmd.unlink()
+                    if (time.time() - float(b_data.get("timestamp", 0))) <= 5.0:
+                        act = b_data.get("action")
+                        if act == "acknowledge" and buzzer:
+                            buzzer.acknowledge()
+                        elif act == "toggle_mute" and buzzer:
+                            buzzer.toggle_mute()
                 except Exception:
                     pass
 
@@ -333,7 +363,7 @@ def run_pipeline(
             }
             current_decision = None
             for ev_idx, ev in enumerate(all_evs):
-                dec = escalation.evaluate(event=ev, train_state=train_state, current_time=frame_ts, snapshot=frame)
+                dec = escalation.evaluate(event=ev, train_state=current_train_state, current_time=frame_ts, snapshot=frame)
                 if current_decision is None or SEVERITY_PRIORITY.get(dec.severity, 0) > SEVERITY_PRIORITY.get(current_decision.severity, 0):
                     current_decision = dec
                 if reg_result.zones_unverified and not dec.action_taken.startswith("[ZONES UNVERIFIED]"):
@@ -457,7 +487,8 @@ def run_pipeline(
                 status_text = "SILENT DISTRESS GESTURE: DISPATCHING STATION SECURITY"
             else:
                 banner_color = (30, 130, 30)    # Green
-                status_text = f"PLATFORM SECURE | TRAIN: {train_state.value}"
+                ts_val = current_train_state.value if hasattr(current_train_state, "value") else str(current_train_state)
+                status_text = f"PLATFORM SECURE | TRAIN: {ts_val}"
 
             cv2.rectangle(annotated, (0, 0), (w, banner_h), banner_color, -1)
             cv2.putText(annotated, status_text, (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
@@ -490,7 +521,7 @@ def run_pipeline(
                 hub.update_telemetry(
                     fps=avg_fps,
                     latency_ms=avg_lat_ms,
-                    train_state=train_state.value,
+                    train_state=current_train_state.value if hasattr(current_train_state, "value") else str(current_train_state),
                     is_fallback=getattr(frame_source, "is_fallback", False),
                     source_target=getattr(frame_source, "primary_target", str(resolved_source)),
                     retry_status=getattr(frame_source, "retry_status", "Active")

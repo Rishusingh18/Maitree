@@ -251,8 +251,10 @@ def run_live_pipeline(
                 perf_capture.append((time.perf_counter() - t0_cap) * 1000.0)
 
                 if not ret or frame is None:
-                    if hasattr(frame_source, "loop") and not frame_source.loop:
-                        print(f"[Live] Video file reached EOF after {frame_idx} frames. Stopping.")
+                    from metro_safety.perception.frame_source import VideoFileSource
+                    is_terminal_eof = isinstance(frame_source, VideoFileSource) and not getattr(frame_source, "loop", True)
+                    if is_terminal_eof:
+                        print(f"[Live] Video file reached terminal EOF after {frame_idx} frames. Stopping.")
                         break
                     hub.update_frame(None, is_online=False, status_msg=frame_source.source_name)
                     time.sleep(0.04)
@@ -325,13 +327,41 @@ def run_live_pipeline(
                     zone_tracker.on_first_frame(frame)
                 zone_tracker.set_demo_mode(is_demo)
 
+                # Check for cross-process zone confirmation command
                 cmd_path = Path("data/cache/zone_confirm.cmd")
                 if cmd_path.exists():
                     try:
+                        cmd_content = cmd_path.read_text(encoding="utf-8")
+                        cmd_data = json.loads(cmd_content)
                         cmd_path.unlink()
-                        c_ok, c_msg = zone_tracker.confirm_alignment()
-                        resp_path = Path("data/cache/zone_confirm.resp")
-                        resp_path.write_text(json.dumps({"status": "ok" if c_ok else "error", "message": c_msg}), encoding="utf-8")
+                        req_id = cmd_data.get("req_id")
+                        cmd_ts = float(cmd_data.get("timestamp", 0))
+                        if (time.time() - cmd_ts) <= 2.0:
+                            c_ok, c_msg = zone_tracker.confirm_alignment()
+                            resp_path = Path("data/cache/zone_confirm.resp")
+                            resp_path.write_text(json.dumps({
+                                "req_id": req_id,
+                                "status": "ok" if c_ok else "error",
+                                "message": c_msg
+                            }), encoding="utf-8")
+                        else:
+                            logger.warning(f"[Live] Discarding timed-out zone confirmation command: req_id={req_id}")
+                    except Exception:
+                        pass
+
+                # Check for cross-process buzzer control command (acknowledge / mute)
+                buzzer_cmd = Path("data/cache/buzzer_control.cmd")
+                if buzzer_cmd.exists():
+                    try:
+                        b_content = buzzer_cmd.read_text(encoding="utf-8")
+                        b_data = json.loads(b_content)
+                        buzzer_cmd.unlink()
+                        if (time.time() - float(b_data.get("timestamp", 0))) <= 5.0:
+                            act = b_data.get("action")
+                            if act == "acknowledge" and buzzer:
+                                buzzer.acknowledge()
+                            elif act == "toggle_mute" and buzzer:
+                                buzzer.toggle_mute()
                     except Exception:
                         pass
 

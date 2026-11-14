@@ -83,9 +83,9 @@ class FlowStep(nn.Module):
         self.flow_coupling = flow_coupling
         if A is None:
             g = Graph(strategy=strategy, max_hop=max_hops)
-            self.register_buffer("A", torch.from_numpy(g.A).float().to(device))
+            self.register_buffer("A", torch.from_numpy(g.A).float().to(device), persistent=False)
         else:
-            self.register_buffer("A", A.float().to(device))
+            self.register_buffer("A", A.float().to(device), persistent=False)
 
         self.actnorm = ActNorm2d(in_channels, actnorm_scale)
 

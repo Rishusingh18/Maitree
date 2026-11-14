@@ -28,6 +28,16 @@ TELEMETRY_CACHE_PATH = CACHE_DIR / "live_telemetry.json"
 EVENTS_CACHE_PATH = CACHE_DIR / "live_events.json"
 
 
+def _is_pid_alive(pid: Optional[int]) -> bool:
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError, AttributeError):
+        return False
+
+
 class LiveHub:
     """Thread-safe state hub shared between the vision pipeline and web dashboard."""
 
@@ -131,9 +141,11 @@ class LiveHub:
                         self._frame_seq += 1
                         self.producer_pid = os.getpid()
 
-                        # Cross-process persistence
+                        # Cross-process persistence: write to temp file then atomic replace
                         try:
-                            FRAME_CACHE_PATH.write_bytes(self._latest_jpeg)
+                            tmp_frame = FRAME_CACHE_PATH.with_suffix(f".tmp.{os.getpid()}")
+                            tmp_frame.write_bytes(self._latest_jpeg)
+                            tmp_frame.replace(FRAME_CACHE_PATH)
                         except Exception:
                             pass
                 except Exception as e:
@@ -340,6 +352,8 @@ class LiveHub:
                     "camera_motion_reason": self.camera_motion_reason,
                     "producer_pid": self.producer_pid,
                     "adaptive_zones": adaptive_info,
+                    "session_id": self.session_id,
+                    "is_online": self._is_online,
                     "timestamp": time.time()
                 }
                 TELEMETRY_CACHE_PATH.write_text(json.dumps(t_payload))
@@ -443,16 +457,21 @@ class LiveHub:
                 mtime = TELEMETRY_CACHE_PATH.stat().st_mtime
                 if (time.time() - mtime) < 4.0:
                     cached = json.loads(TELEMETRY_CACHE_PATH.read_text())
-                    for k in ["live_fps", "detector_fps", "live_latency_ms", "is_fallback", "source_target", "retry_status", "adaptive_zones"]:
-                        if k in cached:
-                            res[k] = cached[k]
-                    if "train_state" in cached:
-                        if not getattr(self, "_explicit_train_state", False):
-                            res["train_state"] = cached["train_state"]
-                    if "ets_status" in cached:
-                        if not getattr(self, "_explicit_ets_status", False):
-                            res["ets_status"] = cached["ets_status"]
-                    res["is_online"] = True
+                    cached_pid = cached.get("producer_pid")
+                    if cached_pid is not None and cached_pid != os.getpid() and _is_pid_alive(cached_pid):
+                        for k in ["live_fps", "detector_fps", "live_latency_ms", "is_fallback", "source_target", "retry_status", "adaptive_zones", "session_id"]:
+                            if k in cached:
+                                res[k] = cached[k]
+                        if "train_state" in cached:
+                            if not getattr(self, "_explicit_train_state", False):
+                                res["train_state"] = cached["train_state"]
+                        if "ets_status" in cached:
+                            if not getattr(self, "_explicit_ets_status", False):
+                                res["ets_status"] = cached["ets_status"]
+                        if "is_online" in cached:
+                            res["is_online"] = bool(cached["is_online"])
+                        else:
+                            res["is_online"] = True
             except Exception:
                 pass
 
@@ -485,8 +504,11 @@ class LiveHub:
             in_mem = list(self.events_history)
 
         if in_mem:
-            res = [ev for ev in in_mem if session_id is None or ev.get("session_id") == session_id]
-            return res[:limit]
+            if session_id:
+                matching = [ev for ev in in_mem if ev.get("session_id") == session_id]
+                if matching:
+                    return matching[:limit]
+            return in_mem[:limit]
 
         # Check disk cache if in-memory is empty
         if EVENTS_CACHE_PATH.exists():
@@ -552,6 +574,15 @@ class LiveHub:
             "is_demo": False,
             "session_id": self.session_id
         })
+
+        # Dispatch cross-process IPC to active producer buzzer
+        try:
+            buzzer_cmd = Path("data/cache/buzzer_control.cmd")
+            buzzer_cmd.parent.mkdir(parents=True, exist_ok=True)
+            buzzer_cmd.write_text(json.dumps({"action": "acknowledge", "timestamp": time.time()}), encoding="utf-8")
+        except Exception:
+            pass
+
         return {"status": "ok", "message": "Alarm acknowledged and buzzer silenced."}
 
     def toggle_buzzer_mute(self) -> Dict[str, Any]:
@@ -583,6 +614,15 @@ class LiveHub:
             "is_demo": False,
             "session_id": self.session_id
         })
+
+        # Dispatch cross-process IPC to active producer buzzer
+        try:
+            buzzer_cmd = Path("data/cache/buzzer_control.cmd")
+            buzzer_cmd.parent.mkdir(parents=True, exist_ok=True)
+            buzzer_cmd.write_text(json.dumps({"action": "toggle_mute", "timestamp": time.time()}), encoding="utf-8")
+        except Exception:
+            pass
+
         return {"status": "ok", "muted": new_mute}
 
     def test_buzzer(self, pattern: str = "L2") -> Dict[str, Any]:
@@ -646,6 +686,8 @@ class LiveHub:
                 if TELEMETRY_CACHE_PATH.exists():
                     cached = json.loads(TELEMETRY_CACHE_PATH.read_text())
                     cached["ets_status"] = "ENGAGED"
+                    cached["session_id"] = self.session_id
+                    cached["producer_pid"] = self.producer_pid
                     TELEMETRY_CACHE_PATH.write_text(json.dumps(cached))
             except Exception:
                 pass
@@ -695,6 +737,8 @@ class LiveHub:
                 if TELEMETRY_CACHE_PATH.exists():
                     cached = json.loads(TELEMETRY_CACHE_PATH.read_text())
                     cached["ets_status"] = "DISENGAGED"
+                    cached["session_id"] = self.session_id
+                    cached["producer_pid"] = self.producer_pid
                     TELEMETRY_CACHE_PATH.write_text(json.dumps(cached))
             except Exception:
                 pass
@@ -743,6 +787,13 @@ class LiveHub:
                             return {"status": res.get("status", "ok"), "message": res.get("message", "")}
                     except Exception:
                         pass
+
+            # Timeout cancellation: clean up cmd_path so stale command cannot execute later
+            if cmd_path.exists():
+                try:
+                    cmd_path.unlink()
+                except Exception:
+                    pass
         except Exception as _e:
             logger.debug(f"IPC zone confirmation failed: {_e}")
 

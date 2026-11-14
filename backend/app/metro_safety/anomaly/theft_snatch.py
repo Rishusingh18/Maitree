@@ -80,6 +80,8 @@ class TheftSnatchDetector:
         self.confirmed_owners: Dict[int, int] = {}
         # object_id -> SnatchCandidate
         self.candidates: Dict[int, SnatchCandidate] = {}
+        # Track resolved/expired interactions to prevent instant rearm: bid -> {"suspect": id, "victim": id, "ts": float}
+        self.resolved_interactions: Dict[int, Dict[str, Any]] = {}
         # object history: object_id -> list of (center_x, center_y, ts, speed)
         self.object_velocity_history: Dict[int, List[Tuple[float, float, float, float]]] = {}
 
@@ -200,6 +202,8 @@ class TheftSnatchDetector:
                             link.confirmed_owner = True
                             if bid not in self.confirmed_owners:
                                 self.confirmed_owners[bid] = pid
+                            if bid in self.resolved_interactions and self.resolved_interactions[bid]["victim"] == pid:
+                                del self.resolved_interactions[bid]
                 else:
                     if pid in links and not links[pid].confirmed_owner:
                         links[pid].proximity_frames = 0
@@ -216,6 +220,11 @@ class TheftSnatchDetector:
                 elapsed = now - cand.approach_ts
                 if cand.alerted:
                     if elapsed > self.owner_follow_sec + 2.0:
+                        self.resolved_interactions[bid] = {
+                            "suspect": cand.suspect_track_id,
+                            "victim": cand.victim_track_id,
+                            "ts": now
+                        }
                         del self.candidates[bid]
                     continue
 
@@ -321,6 +330,11 @@ class TheftSnatchDetector:
 
                 # Timeout stale candidate
                 if elapsed > self.owner_follow_sec + 2.0:
+                    self.resolved_interactions[bid] = {
+                        "suspect": cand.suspect_track_id,
+                        "victim": cand.victim_track_id,
+                        "ts": now
+                    }
                     del self.candidates[bid]
 
             else:
@@ -342,6 +356,16 @@ class TheftSnatchDetector:
                         min_wrist_dist = min(wrist_dists) if wrist_dists else self._dist(pcenter, (bx, by))
 
                         if min_wrist_dist < self.suspect_wrist_prox_px:
+                            # Do not rearm while confirmed_owners still identifies the victim
+                            # unless ownership recovered or interaction expired
+                            if bid in self.resolved_interactions:
+                                res_int = self.resolved_interactions[bid]
+                                if (now - res_int.get("ts", 0)) <= 15.0:
+                                    if res_int.get("suspect") == pid and res_int.get("victim") == owner_id:
+                                        continue
+                                else:
+                                    del self.resolved_interactions[bid]
+
                             # Suspect wrist approached bag owned by owner_id!
                             self.candidates[bid] = SnatchCandidate(
                                 object_id=bid,

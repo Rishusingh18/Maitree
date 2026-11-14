@@ -169,7 +169,9 @@ class AnomalyEngine:
                 timestamp=now,
                 tracked_dets=person_detections,
                 zone_manager=zone_manager,
-                train_state=train_state
+                train_state=train_state,
+                camera_motion=camera_motion,
+                zones_unverified=zones_unverified
             )
             for ev in loit_events:
                 ev.camera_motion = camera_motion
@@ -187,7 +189,8 @@ class AnomalyEngine:
                 tracked_persons=person_detections,
                 zone_manager=zone_manager,
                 train_state=train_state,
-                synthetic_objects=synthetic_objects
+                synthetic_objects=synthetic_objects,
+                alert_enabled=self.ao_enabled
             )
             if self.ao_enabled:
                 for ev in ao_events:
