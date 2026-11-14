@@ -183,6 +183,72 @@ class EscalationEngine:
                 self.active_audible_hazards[event.track_id] = ev_type
                 self.buzzer.activate(self.platform_id, pattern="PULSED")
 
+        # 5. Anomaly & Welfare Events (Strictly advisory review, max L2, NEVER ETS, NEVER L3 siren)
+        elif ev_type in [EventType.PERSON_DOWN, EventType.LOITERING, EventType.ABANDONED_OBJECT, EventType.POSSIBLE_SNATCH, EventType.ANOMALY_POSE]:
+            is_camera_moving = getattr(event, "camera_motion", False)
+            zones_unverified = getattr(event, "zones_unverified", False)
+            requested_severity = event.metadata.get("severity_cap", "L2")
+
+            if ev_type == EventType.PERSON_DOWN:
+                dur = event.metadata.get("prone_duration_sec", 0.0)
+                if requested_severity == "L1" or dur < 25.0:
+                    severity = SeverityLevel.L1
+                    action_msg = f"WELFARE NOTICE: Person lying down ({dur:.1f}s) - operator review."
+                    buzzer_active = False
+                    cr_alert = True
+                else:
+                    severity = SeverityLevel.L2
+                    action_msg = f"WELFARE ALERT: Person unresponsive on ground ({dur:.1f}s) - check passenger."
+                    buzzer_active = True
+                    cr_alert = True
+                    self.active_audible_hazards[event.track_id] = ev_type
+                    self.buzzer.activate(self.platform_id, pattern="PULSED")
+
+            elif ev_type == EventType.LOITERING:
+                dwell = event.metadata.get("dwell_time_sec", 0.0)
+                if requested_severity == "L1" or dwell < 45.0:
+                    severity = SeverityLevel.L1
+                    action_msg = f"MONITOR NOTICE: Extended dwell in {event.zone} ({dwell:.1f}s)."
+                    buzzer_active = False
+                    cr_alert = True
+                else:
+                    severity = SeverityLevel.L2
+                    action_msg = f"MONITOR ALERT: Sustained loitering in {event.zone} ({dwell:.1f}s)."
+                    buzzer_active = True
+                    cr_alert = True
+                    self.active_audible_hazards[event.track_id] = ev_type
+                    self.buzzer.activate(self.platform_id, pattern="PULSED")
+
+            elif ev_type == EventType.ABANDONED_OBJECT:
+                obj_cls = event.metadata.get("object_class", "luggage")
+                unattended_s = event.metadata.get("unattended_duration_sec", 0.0)
+                severity = SeverityLevel.L2
+                action_msg = f"SECURITY REVIEW: Unattended {obj_cls} detected ({unattended_s:.1f}s) - operator inspection required."
+                buzzer_active = False
+                cr_alert = True
+
+            elif ev_type == EventType.POSSIBLE_SNATCH:
+                severity = SeverityLevel.L2
+                action_msg = "SECURITY REVIEW: Possible snatch detected - operator verification required."
+                buzzer_active = False
+                cr_alert = True
+
+            elif ev_type == EventType.ANOMALY_POSE:
+                severity = SeverityLevel.L1
+                nll = event.metadata.get("nll_score", 0.0)
+                action_msg = f"ANOMALY REVIEW: Abnormal pose motion pattern (NLL: {nll:.1f})."
+                buzzer_active = False
+                cr_alert = True
+
+            if is_camera_moving or zones_unverified:
+                severity = SeverityLevel.L1
+                reason = getattr(event, 'motion_reason', 'camera motion') if is_camera_moving else 'unverified zones'
+                action_msg = f"LOW TRUST ({reason}): {action_msg}"
+                buzzer_active = False
+
+            ets_active = False  # STRICT REQUIREMENT: Anomaly events NEVER trigger ETS
+            self._safe_send_alert(event, severity, action_msg)
+
         latency_ms = (time.perf_counter() - start_time) * 1000.0
 
         decision = EscalationDecision(

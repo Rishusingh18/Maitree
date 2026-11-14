@@ -121,6 +121,19 @@ def test_dashboard_video_renders_in_real_browser():
             for snippet in script_snippets:
                 assert snippet not in body_text, f"Raw JavaScript text leaked into document.body: '{snippet}'"
 
+            # Assert Anomaly filter buttons exist and toggle active class
+            filter_all = page.locator("#filter-all")
+            filter_safety = page.locator("#filter-safety")
+            filter_anomaly = page.locator("#filter-anomaly")
+            assert filter_all.is_visible()
+            assert filter_safety.is_visible()
+            assert filter_anomaly.is_visible()
+
+            # Click anomaly filter button
+            filter_anomaly.click()
+            assert "active" in (filter_anomaly.get_attribute("class") or "")
+            assert "active" not in (filter_all.get_attribute("class") or "")
+
             browser.close()
 
     finally:

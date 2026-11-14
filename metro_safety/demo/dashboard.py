@@ -76,7 +76,10 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
         .badge-l2 { background-color: rgba(245, 158, 11, 0.2); color: #FCD34D; border: 1px solid var(--warning); }
         .badge-l1 { background-color: rgba(234, 179, 8, 0.2); color: #FEF08A; border: 1px solid #EAB308; }
         .badge-distress { background-color: rgba(168, 85, 247, 0.2); color: #E9D5FF; border: 1px solid var(--purple); }
+        .badge-anomaly { background-color: rgba(168, 85, 247, 0.25); color: #D8B4FE; border: 1px solid #C084FC; }
         .badge-secure { background-color: rgba(16, 185, 129, 0.2); color: #A7F3D0; border: 1px solid var(--success); }
+        .filter-btn { padding: 3px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; background: var(--bg-subtle); color: var(--text-main); border: 1px solid var(--border); }
+        .filter-btn.active { background: var(--accent); color: #000; font-weight: 600; border-color: var(--accent); }
 
         /* Overlooker Emergency Banner */
         #alert-banner {
@@ -343,8 +346,15 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
             </div>
 
             <div class="card">
-                <div class="card-title">
-                    <span>Recent Incident Event Log</span>
+                <div class="card-title" style="display: flex; justify-content: space-between; align-items: center;">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span>Recent Incident Event Log</span>
+                        <div style="display: flex; gap: 4px;" id="event-filter-group">
+                            <button class="filter-btn active" id="filter-all" onclick="setEventFilter('all')">All</button>
+                            <button class="filter-btn" id="filter-safety" onclick="setEventFilter('safety')">Safety</button>
+                            <button class="filter-btn" id="filter-anomaly" onclick="setEventFilter('anomaly')">Anomaly</button>
+                        </div>
+                    </div>
                     <span style="font-size: 12px; color: var(--text-muted);" id="event-count">0 events</span>
                 </div>
                 <div class="table-wrap">
@@ -660,6 +670,15 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                 });
         }
 
+        let currentEventFilter = 'all';
+        function setEventFilter(f) {
+            currentEventFilter = f;
+            document.querySelectorAll('#event-filter-group .filter-btn').forEach(b => b.classList.remove('active'));
+            const target = document.getElementById('filter-' + f);
+            if (target) target.classList.add('active');
+            updateEvents();
+        }
+
         function updateEvents() {
             fetch('/api/events')
                 .then(r => {
@@ -668,10 +687,21 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                 })
                 .then(data => {
                     const tbody = document.getElementById('events-tbody');
-                    const events = data.events || [];
-                    document.getElementById('event-count').textContent = events.length + ' events';
+                    const allEvents = data.events || [];
 
-                    if (events.length === 0) return;
+                    const events = allEvents.filter(ev => {
+                        const isAnom = ev.is_anomaly || ['PERSON_DOWN', 'LOITERING', 'ABANDONED_OBJECT', 'POSSIBLE_SNATCH', 'ANOMALY_POSE'].some(t => (ev.event_type || '').indexOf(t) !== -1);
+                        if (currentEventFilter === 'safety') return !isAnom;
+                        if (currentEventFilter === 'anomaly') return isAnom;
+                        return true;
+                    });
+
+                    document.getElementById('event-count').textContent = events.length + ' events' + (currentEventFilter !== 'all' ? ` (${currentEventFilter})` : '');
+
+                    if (events.length === 0) {
+                        tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 16px;">No ${currentEventFilter} events recorded.</td></tr>`;
+                        return;
+                    }
 
                     let html = '';
                     events.slice(0, 20).forEach(ev => {
@@ -689,10 +719,15 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                         const cleanType = ev.event_type ? ev.event_type.replace('[DEMO]', '').trim() : '--';
                         const demoBadge = isDemo ? '<span class="badge badge-l2" style="font-size: 10px; margin-right: 4px;">DEMO</span>' : '';
 
+                        const isAnom = ev.is_anomaly || ['PERSON_DOWN', 'LOITERING', 'ABANDONED_OBJECT', 'POSSIBLE_SNATCH', 'ANOMALY_POSE'].some(t => cleanType.indexOf(t) !== -1);
+                        const anomBadge = isAnom ? '<span class="badge badge-anomaly" style="font-size: 10px; margin-right: 4px;">ANOMALY</span>' : '';
+
+                        const snapThumb = ev.snapshot_crop ? `<img src="${ev.snapshot_crop}" style="width:24px;height:24px;object-fit:cover;border-radius:3px;vertical-align:middle;margin-right:4px;" title="Object crop"/>` : '';
+
                         html += `<tr>
                             <td>${timeStr}</td>
                             <td>#${ev.track_id}</td>
-                            <td>${demoBadge}<strong>${cleanType}</strong></td>
+                            <td>${demoBadge}${anomBadge}${snapThumb}<strong>${cleanType}</strong></td>
                             <td>${ev.zone}</td>
                             <td><span class="badge ${sevBadge}">${ev.severity}</span></td>
                             <td>${conf}</td>

@@ -76,7 +76,10 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
         .badge-l2 { background-color: rgba(245, 158, 11, 0.2); color: #FCD34D; border: 1px solid var(--warning); }
         .badge-l1 { background-color: rgba(234, 179, 8, 0.2); color: #FEF08A; border: 1px solid #EAB308; }
         .badge-distress { background-color: rgba(168, 85, 247, 0.2); color: #E9D5FF; border: 1px solid var(--purple); }
+        .badge-anomaly { background-color: rgba(168, 85, 247, 0.25); color: #D8B4FE; border: 1px solid #C084FC; }
         .badge-secure { background-color: rgba(16, 185, 129, 0.2); color: #A7F3D0; border: 1px solid var(--success); }
+        .filter-btn { padding: 3px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; background: var(--bg-subtle); color: var(--text-main); border: 1px solid var(--border); }
+        .filter-btn.active { background: var(--accent); color: #000; font-weight: 600; border-color: var(--accent); }
 
         /* Overlooker Emergency Banner */
         #alert-banner {
@@ -275,6 +278,19 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
         </div>
     </div>
 
+    <!-- Adaptive Zones Unverified / Confirmation Banner -->
+    <div id="zone-unverified-banner" style="display: none; background: linear-gradient(90deg, #92400E, #78350F); border: 2px solid #F59E0B; border-radius: 8px; padding: 14px 20px; margin-bottom: 18px;">
+        <div class="alert-content">
+            <div class="alert-text">
+                <h4 id="zone-alert-title" style="color: #FEF3C7; margin: 0 0 4px 0; font-size: 16px;">⚠️ ZONES UNVERIFIED — CAMERA DRIFT DETECTED</h4>
+                <p id="zone-alert-body" style="color: #FDE68A; margin: 0; font-size: 13px;">Camera misalignment detected. Operator confirmation required to verify zones.</p>
+            </div>
+            <div>
+                <button id="btn-confirm-zones" class="btn btn-ack" style="background: #F59E0B; color: #18181B;" onclick="confirmZoneAlignment()">CONFIRM CURRENT ZONES</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Main Grid -->
     <div class="grid">
         <!-- Left: Live Video & Event Log -->
@@ -330,8 +346,15 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
             </div>
 
             <div class="card">
-                <div class="card-title">
-                    <span>Recent Incident Event Log</span>
+                <div class="card-title" style="display: flex; justify-content: space-between; align-items: center;">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span>Recent Incident Event Log</span>
+                        <div style="display: flex; gap: 4px;" id="event-filter-group">
+                            <button class="filter-btn active" id="filter-all" onclick="setEventFilter('all')">All</button>
+                            <button class="filter-btn" id="filter-safety" onclick="setEventFilter('safety')">Safety</button>
+                            <button class="filter-btn" id="filter-anomaly" onclick="setEventFilter('anomaly')">Anomaly</button>
+                        </div>
+                    </div>
                     <span style="font-size: 12px; color: var(--text-muted);" id="event-count">0 events</span>
                 </div>
                 <div class="table-wrap">
@@ -621,6 +644,22 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                     } else {
                         banner.style.display = 'none';
                     }
+
+                    // Adaptive Zones Unverified Banner
+                    const zoneBanner = document.getElementById('zone-unverified-banner');
+                    const zoneBtn = document.getElementById('btn-confirm-zones');
+                    const az = data.adaptive_zones;
+                    if (zoneBanner && az && (az.zones_unverified || az.requires_operator_confirmation || az.status === 'UNVERIFIED_REFERENCE' || az.status === 'ZONES UNVERIFIED')) {
+                        zoneBanner.style.display = 'block';
+                        const isUnverifiedRef = (az.status === 'UNVERIFIED_REFERENCE');
+                        document.getElementById('zone-alert-title').textContent = isUnverifiedRef
+                            ? '⚠️ UNVERIFIED REFERENCE FRAME — OPERATOR CONFIRMATION REQUIRED'
+                            : '⚠️ ZONES UNVERIFIED — CAMERA DRIFT DETECTED';
+                        document.getElementById('zone-alert-body').textContent = `Drift: ${(az.drift_px||0).toFixed(1)}px | Inliers: ${az.inliers||0} | Status: ${az.status}${az.failure_reason ? ' (' + az.failure_reason + ')' : ''}`;
+                        if (zoneBtn && !isBackendDead) zoneBtn.disabled = false;
+                    } else if (zoneBanner) {
+                        zoneBanner.style.display = 'none';
+                    }
                 })
                 .catch(err => {
                     console.debug('Telemetry poll error:', err);
@@ -631,6 +670,15 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                 });
         }
 
+        let currentEventFilter = 'all';
+        function setEventFilter(f) {
+            currentEventFilter = f;
+            document.querySelectorAll('#event-filter-group .filter-btn').forEach(b => b.classList.remove('active'));
+            const target = document.getElementById('filter-' + f);
+            if (target) target.classList.add('active');
+            updateEvents();
+        }
+
         function updateEvents() {
             fetch('/api/events')
                 .then(r => {
@@ -639,10 +687,21 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                 })
                 .then(data => {
                     const tbody = document.getElementById('events-tbody');
-                    const events = data.events || [];
-                    document.getElementById('event-count').textContent = events.length + ' events';
+                    const allEvents = data.events || [];
 
-                    if (events.length === 0) return;
+                    const events = allEvents.filter(ev => {
+                        const isAnom = ev.is_anomaly || ['PERSON_DOWN', 'LOITERING', 'ABANDONED_OBJECT', 'POSSIBLE_SNATCH', 'ANOMALY_POSE'].some(t => (ev.event_type || '').indexOf(t) !== -1);
+                        if (currentEventFilter === 'safety') return !isAnom;
+                        if (currentEventFilter === 'anomaly') return isAnom;
+                        return true;
+                    });
+
+                    document.getElementById('event-count').textContent = events.length + ' events' + (currentEventFilter !== 'all' ? ` (${currentEventFilter})` : '');
+
+                    if (events.length === 0) {
+                        tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 16px;">No ${currentEventFilter} events recorded.</td></tr>`;
+                        return;
+                    }
 
                     let html = '';
                     events.slice(0, 20).forEach(ev => {
@@ -660,10 +719,15 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                         const cleanType = ev.event_type ? ev.event_type.replace('[DEMO]', '').trim() : '--';
                         const demoBadge = isDemo ? '<span class="badge badge-l2" style="font-size: 10px; margin-right: 4px;">DEMO</span>' : '';
 
+                        const isAnom = ev.is_anomaly || ['PERSON_DOWN', 'LOITERING', 'ABANDONED_OBJECT', 'POSSIBLE_SNATCH', 'ANOMALY_POSE'].some(t => cleanType.indexOf(t) !== -1);
+                        const anomBadge = isAnom ? '<span class="badge badge-anomaly" style="font-size: 10px; margin-right: 4px;">ANOMALY</span>' : '';
+
+                        const snapThumb = ev.snapshot_crop ? `<img src="${ev.snapshot_crop}" style="width:24px;height:24px;object-fit:cover;border-radius:3px;vertical-align:middle;margin-right:4px;" title="Object crop"/>` : '';
+
                         html += `<tr>
                             <td>${timeStr}</td>
                             <td>#${ev.track_id}</td>
-                            <td>${demoBadge}<strong>${cleanType}</strong></td>
+                            <td>${demoBadge}${anomBadge}${snapThumb}<strong>${cleanType}</strong></td>
                             <td>${ev.zone}</td>
                             <td><span class="badge ${sevBadge}">${ev.severity}</span></td>
                             <td>${conf}</td>
@@ -699,6 +763,20 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
 
         function resetETS() {
             apiPost('/api/ets/reset');
+        }
+
+        function confirmZoneAlignment() {
+            const btn = document.getElementById('btn-confirm-zones');
+            if (btn) btn.disabled = true;
+            apiPost('/api/zones/confirm')
+                .then(res => {
+                    console.log('Zone alignment confirmed:', res);
+                    updateTelemetry();
+                })
+                .catch(err => {
+                    showErrorToast('Zone Confirmation Failed: ' + (err.message || err));
+                    if (btn && !isBackendDead) btn.disabled = false;
+                });
         }
 
         function setTrainState(state) {
@@ -816,6 +894,18 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
         data = request.get_json(silent=True) or {}
         active_hub.push_event(data)
         return jsonify({"status": "received"})
+
+    @app.route("/api/zones/confirm", methods=["POST"])
+    def api_zones_confirm():
+        """Operator confirmation of current or proposed zone alignment."""
+        expected_key = os.environ.get("API_KEY")
+        if expected_key:
+            req_key = request.headers.get("X-API-Key") or request.args.get("key")
+            if req_key != expected_key:
+                return jsonify({"status": "error", "message": "Unauthorized"}), 403
+        res = active_hub.confirm_zone_alignment()
+        status_code = 200 if res.get("status") == "ok" else 400
+        return jsonify(res), status_code
 
     return app
 

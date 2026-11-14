@@ -57,3 +57,26 @@ Once launched, access everything from your browser:
 * **Interactive OpenAPI Swagger Documentation**: [http://localhost:8000/docs](http://localhost:8000/docs)
 * **Real-time Pipeline Telemetry API**: [http://localhost:8000/api/telemetry](http://localhost:8000/api/telemetry)
 * **Health & Readiness Probe**: [http://localhost:8000/health](http://localhost:8000/health)
+
+---
+
+## 🔍 Anomaly, Welfare & Theft Detection Subsystems
+
+The platform includes autonomous anomaly detection modules designed as **operator welfare review alerts** (strictly capped at Level 2 severity, zero automated Emergency Trip Switch actuation, anonymous track IDs):
+
+1. **`PERSON_DOWN` (Passenger Welfare Alert)**: Detects persons lying horizontally on the platform/ground (low head-to-hip vertical span, torso angle $< 35^\circ$ from horizontal, wide aspect ratio $> 1.15$, low motion energy). Distinguishes temporary crouching from unresponsive collapse ($T_1 = 10\text{s} \rightarrow \text{L1 Notice}$, $T_2 = 30\text{s} \rightarrow \text{L2 Welfare Alert}$). Spatial-temporal re-association maintains timers across tracking ID churn.
+2. **`LOITERING` (Extended Dwell Monitor)**: Monitors stationary dwell inside critical zones beyond configurable thresholds ($T_1 = 30\text{s}$, $T_2 = 60\text{s}$). Automatically suppresses dwell alerts during train approach, docking, and passenger boarding.
+3. **`ABANDONED_OBJECT` (Unattended Luggage)**: Decimated YOLO luggage detection (backpack, handbag, suitcase) runs at configurable frame intervals (default 10) to conserve CPU. Tracks bags, detects owner separation ($> 130\text{ px}$ for $> 15\text{s}$), and stores timestamped snapshot crops.
+4. **`POSSIBLE_SNATCH` (Theft Prototype)**: Tracks bag-owner association via sustained wrist/body proximity. Detects opportunistic snatching when a second person's wrist approaches the bag, the bag accelerates rapidly away ($> 10\text{ px/frame}$), and the owner does not follow. Suppresses consensual handovers and walking companions. Confidence capped at $0.70$ and labeled *"possible, operator review"*.
+5. **`STG-NF` (Spatio-Temporal Graph Normalizing Flows)**: Pretrained ICCV 2023 normalizing flow network scoring rolling 24-frame pose sequences via negative log-likelihood (NLL).
+
+### Tools & Utilities
+
+* **HUD Video Replay Tool**:
+  ```powershell
+  python tools/replay.py --source demo_clips/demo_fall.mp4
+  ```
+* **Anomaly Evaluation Harness**:
+  ```powershell
+  python tools/eval_anomaly.py
+  ```

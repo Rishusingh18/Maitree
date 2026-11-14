@@ -144,6 +144,29 @@ class ScenarioGenerator:
                 y = curr_y
                 torso_tilt = 88.0
 
+            elif scenario == "PERSON_DOWN":
+                # Upright initially, collapses horizontal at f=15, motionless on ground
+                if f < 15:
+                    x = curr_x
+                    y = curr_y
+                    torso_tilt = 86.0
+                else:
+                    x = curr_x + 5.0
+                    y = curr_y + 12.0
+                    torso_tilt = 12.0  # Horizontal body
+
+            elif scenario == "BENCH_LYING":
+                # Lying down prone horizontally on bench across all frames
+                x = curr_x
+                y = curr_y
+                torso_tilt = 10.0
+
+            elif scenario == "LOITERING":
+                # Stationary dwell within small anchor circle
+                x = curr_x + np.sin(f * 0.15) * 4.0
+                y = curr_y + np.cos(f * 0.15) * 3.0
+                torso_tilt = 88.0
+
             # Construct 17 COCO keypoints relative to (x, y) anchor (ankles)
             kpts = np.zeros((17, 3), dtype=np.float32)
 

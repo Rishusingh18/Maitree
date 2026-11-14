@@ -23,3 +23,15 @@
 ### 5. Distress Gesture Tested on Synthetic Data Only
 - **Issue**: Typical station CCTV cameras (1080p mounted at ceiling height 4-6 meters) resolve hands with only 10-25 pixels across, making individual thumb tucks noisy in low lighting or motion blur.
 - **Limitation**: Both the micro-pose ("Signal for Help") and macro-pose ("Wrists Crossed Overhead") gesture detectors have been evaluated **strictly on synthetic generation and staged test clips**, and have not been validated on real metro crowd footage under adverse lighting or occlusions.
+
+### 6. Anomaly Detection Performance & CPU Decimation
+- **Issue**: Running deep object detection (YOLO bag classes: backpack, handbag, suitcase) alongside 17-keypoint pose estimation and Graph Normalizing Flows on a standard CPU can significantly reduce frame rates if evaluated on every frame.
+- **Measured Reality**:
+  - Baseline Pipeline (Pose + Tracking): **22.75 FPS** (43.9 ms/frame on CPU, 480p)
+  - Pipeline with Anomaly Engine (Decimated bag detection every 10 frames + STG-NF + Anomaly tracking): **18.30 FPS** (54.7 ms/frame on CPU)
+  - Measured Processing Overhead: **10.71 ms/frame**
+- **Mitigation**: Decimated frame execution (`detect_interval_frames: 10`), spatial bounding box tracking, and non-blocking pose rolling buffers conserve CPU cycles and sustain interactive 18+ FPS operation.
+
+### 7. Snatch Heuristic Prototype Scope & Advisory Classification
+- **Issue**: Distinguishing rapid accidental separation or consensual bag handovers from opportunistic snatching using 2D monocular cameras is inherently uncertain in crowded station environments.
+- **Policy & Safeguards**: All snatch detections are heuristic prototypes labeled strictly as `"POSSIBLE_SNATCH - operator review"`, with confidence capped at 0.70 and maximum severity L2. They are strictly prohibited from actuating emergency traction power cuts (ETS) or sounding the Level 3 platform evacuation siren. Anonymous track IDs are used throughout; no facial recognition or individual identification is performed.

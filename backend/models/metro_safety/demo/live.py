@@ -172,6 +172,8 @@ def run_live_pipeline(
         station_id=cfg["system"]["station_id"],
         platform_id=cfg["system"]["platform_id"]
     )
+    from metro_safety.anomaly.engine import AnomalyEngine
+    anomaly_engine = AnomalyEngine(cfg)
 
     # YOLO pose model with CPU performance tuning
     inference_size = int(cfg["perception"].get("inference_size", 480))
@@ -182,6 +184,8 @@ def run_live_pipeline(
         device=cfg["perception"]["device"],
         inference_size=inference_size
     )
+    if hasattr(pose_detector, "_model") and pose_detector._model is not None:
+        anomaly_engine.set_object_detector(pose_detector._model)
 
     # Decoupled async inference worker running DNN on dedicated thread (enabling 25+ FPS display rate)
     async_inference = AsyncInferenceWorker(detector=pose_detector, frame_skip=frame_skip)
@@ -308,11 +312,23 @@ def run_live_pipeline(
                     cam_reason = last_cam_reason
                 perf_motion.append((time.perf_counter() - t0_mot) * 1000.0)
 
-                # 3. Behavior Classification
+                # 3. Behavior Classification & Anomaly Detection
                 rule_events = rule_clf.process_frame(frame_idx, frame_ts, tracks, zm, current_train_state)
                 learned_events = learned_clf.process_frame(frame_idx, frame_ts, tracks, zm, current_train_state)
                 gesture_events = gesture_det.process_frame(frame_idx, frame_ts, tracks, zm, current_train_state)
-                all_events = rule_events + learned_events + gesture_events
+                anomaly_events = anomaly_engine.process_frame(
+                    frame=frame,
+                    frame_idx=frame_idx,
+                    person_detections=tracks,
+                    zone_manager=zm,
+                    timestamp=frame_ts,
+                    train_state=current_train_state.value if hasattr(current_train_state, "value") else str(current_train_state),
+                    camera_motion=is_camera_moving,
+                    motion_reason=cam_reason,
+                    zones_unverified=False,
+                    zone_version=zm.zone_version
+                )
+                all_events = rule_events + learned_events + gesture_events + anomaly_events
 
                 # Tag events with camera motion status for escalation gating
                 for ev in all_events:
@@ -436,7 +452,10 @@ def run_live_pipeline(
                                 "confidence": round(ev.confidence, 2),
                                 "action": dec.action_taken,
                                 "kinematics": kine,
-                                "is_demo": is_demo
+                                "is_demo": is_demo,
+                                "is_anomaly": bool(getattr(ev, "metadata", {}).get("is_anomaly", False)),
+                                "anomaly_type": getattr(ev, "metadata", {}).get("anomaly_type", ""),
+                                "snapshot_crop": getattr(ev, "metadata", {}).get("snapshot_crop", None)
                             })
                         except Exception as hub_ev_err:
                             logger.exception(f"[Live] Error pushing event to LiveHub: {hub_ev_err}")

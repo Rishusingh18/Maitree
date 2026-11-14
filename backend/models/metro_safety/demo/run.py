@@ -89,6 +89,8 @@ def run_pipeline(
         min_persistence=cfg["gesture"]["min_persistence_frames"],
         use_macro_fallback=cfg["gesture"]["use_macro_fallback"]
     )
+    from metro_safety.anomaly.engine import AnomalyEngine
+    anomaly_engine = AnomalyEngine(cfg)
     # Connect to shared LiveHub so run.py also feeds the dashboard
     from metro_safety.demo.hub import get_global_hub
     hub = get_global_hub()
@@ -152,6 +154,8 @@ def run_pipeline(
             inference_size=int(cfg["perception"].get("inference_size", 480))
         )
         print(f"[Pipeline] Loaded YOLO pose detector ({cfg['perception']['model_name']})")
+        if hasattr(pose_detector, "_model") and pose_detector._model is not None:
+            anomaly_engine.set_object_detector(pose_detector._model)
     except Exception as e:
         print(f"[Pipeline] [Notice] YOLO model load failed ({e}), using synthetic detection tracker.")
 
@@ -260,10 +264,24 @@ def run_pipeline(
             frame_zone_version = zm.zone_version
             frame_zones_unverified = reg_result.zones_unverified
 
-            # 3. Behavior Events & Gestures
+            # 3. Behavior Events, Gestures & Anomaly Detection
             rule_evs = rule_clf.process_frame(frame_idx, frame_ts, tracked_dets, zm, train_state)
             gest_evs = gesture_det.process_frame(frame_idx, frame_ts, tracked_dets, zm, train_state)
-            all_evs = rule_evs + gest_evs
+            cam_moving = getattr(rule_clf, "camera_moving", False)
+            cam_reason = getattr(rule_clf, "motion_reason", "Optical flow vibration")
+            anom_evs = anomaly_engine.process_frame(
+                frame=frame,
+                frame_idx=frame_idx,
+                person_detections=tracked_dets,
+                zone_manager=zm,
+                timestamp=frame_ts,
+                train_state=train_state.value if hasattr(train_state, "value") else str(train_state),
+                camera_motion=cam_moving,
+                motion_reason=cam_reason,
+                zones_unverified=frame_zones_unverified,
+                zone_version=frame_zone_version
+            )
+            all_evs = rule_evs + gest_evs + anom_evs
 
             # Tag events with consistent geometry snapshot
             for ev in all_evs:
@@ -340,6 +358,9 @@ def run_pipeline(
                         "confidence": getattr(ev, "confidence", 0.95),
                         "action": dec.action_taken,
                         "is_demo": bool(is_demo),
+                        "is_anomaly": bool(getattr(ev, "metadata", {}).get("is_anomaly", False)),
+                        "anomaly_type": getattr(ev, "metadata", {}).get("anomaly_type", ""),
+                        "snapshot_crop": getattr(ev, "metadata", {}).get("snapshot_crop", None),
                         "session_id": hub.session_id,
                         "zones_unverified": frame_zones_unverified,
                         "zone_version": frame_zone_version

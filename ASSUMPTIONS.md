@@ -86,6 +86,17 @@ This document logs all engineering assumptions made during the design, developme
 - **Unverified Hysteresis & Storm Suppression**: Transition to `ZONES_UNVERIFIED` requires $N = 5$ consecutive invalid estimates. When unverified, last good zones are preserved without silent reassignment, events are tagged with `zones_unverified=True`, alerts are prepended with `[ZONES UNVERIFIED]`, and a dual cooldown keyed on `(zone, event_type)` suppresses alert storms. Recovery to `ALIGNED` requires sustained good estimates over 3.0 seconds.
 - **Operator Override API**: `POST /api/zones/confirm` accepts alignment overrides in memory and audits operator identity and session ID. `GET /api/zones/confirm` is strictly rejected with HTTP 405 Method Not Allowed.
 
+## 13. Anomaly & Theft Detection System
+- **Advisory Welfare & Review Policy**: Anomaly and theft detections are advisory operator review alerts. They are classified as welfare and vigilance notifications rather than hard safety interventions. Under no circumstances do anomaly events trip the simulated Emergency Trip Switch (ETS) or actuate the high-intensity Level 3 platform siren. Maximum severity is capped at Level 2 (pulsed buzzer and dashboard notice).
+- **Theft Detection Language & Limits**: Snatch detection is explicitly labeled as `"POSSIBLE_SNATCH - operator review"`, never as an accusation of theft or criminal certainty. The mechanism is a kinematic proximity-acceleration heuristic subject to occlusions, false positives, and shared bag handling.
+- **Privacy & Anonymous Tracking**: All anomaly analytics operate strictly on ephemeral anonymous integer track IDs. No face recognition, re-identification, demographic analysis, or biometric identification is performed or retained.
+- **Person Down vs Accidental Fall**: `ACCIDENTAL_FALL` is a rapid downward velocity transition into the track bed; `PERSON_DOWN` is a sustained motionless prone posture on the floor. When a track experiences an accidental fall followed by an unresponsive prone posture, the events are linked by track ID.
+- **Timestamp-Based Timers**: All dwell, prone, and unattended timers operate on wall-clock floating-point timestamps (`time.perf_counter()` or frame timestamps), ensuring deterministic behaviour irrespective of variable camera frame rates or frame-skipping optimizations.
+- **Low-Frequency Object Detection**: Heavy deep neural network bag class detection (backpack, handbag, suitcase) runs at a decimated frequency (every $N$ frames, default 10) to conserve CPU cycles for the 25+ FPS pose perception and tracking loops.
+- **Normalizing Flow Skeleton Anomaly Modeling**: Pretrained Spatio-Temporal Graph Normalizing Flows (STG-NF) model multi-frame skeletal kinematics to score anomalous poses/transitions in latent Gaussian space, complementing deterministic rule-based safety constraints.
+- **Camera Motion and Unverified Zone Capping**: During active camera movement (`camera_motion=True`) or unverified zone alignment (`zones_unverified=True`), anomaly events remain observable but are explicitly capped at Level 1 or Level 2 with low-trust flags and explanatory reason annotations.
+
+
 
 
 

@@ -170,3 +170,46 @@ overlooker:
     enabled: false
     bot_token: ""
     chat_id: ""
+anomaly:
+  enabled: true
+  dedup_cooldown_sec: 15.0
+  person_down:
+    enabled: true
+    prone_seconds_l1: 10.0
+    prone_seconds_l2: 30.0
+    angle_threshold_deg: 58.0
+    aspect_ratio_threshold: 1.25
+    motion_energy_threshold: 4.5
+    bench_lying_flag: true
+    reassociation_window_sec: 4.0
+  loitering:
+    enabled: true
+    dwell_seconds_l1: 30.0
+    dwell_seconds_l2: 60.0
+    anchor_radius_px: 70.0
+    monitored_zones:
+      - platform
+      - yellow_band
+      - danger_zone
+    suppress_on_train: true
+  abandoned_object:
+    enabled: true
+    detect_interval_frames: 10
+    unattended_radius_px: 130.0
+    unattended_seconds: 15.0
+    alert_startup_objects: false
+    confidence_threshold: 0.20
+  theft_snatch:
+    enabled: true
+    owner_proximity_px: 65.0
+    owner_min_frames: 4
+    suspect_wrist_proximity_px: 55.0
+    snatch_accel_threshold_px: 10.0
+    owner_follow_window_sec: 1.5
+    handover_max_dist_px: 85.0
+    max_confidence: 0.70
+  stg_nf:
+    enabled: true
+    checkpoint_path: data/models/ShanghaiTech_85_9.tar
+    nll_threshold: 16.0
+    temporal_window: 24
