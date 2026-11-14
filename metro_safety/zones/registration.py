@@ -180,6 +180,9 @@ class AdaptiveZoneTracker:
         frame = cv2.imread(path)
         if frame is None:
             logger.error(f"[AdaptiveZones] Failed to load reference frame from {path}")
+            with self._lock:
+                self.status = AlignmentStatus.UNVERIFIED_REFERENCE
+                self.requires_operator_confirmation = True
             return
         self.set_reference_frame(frame)
 
@@ -486,8 +489,8 @@ class AdaptiveZoneTracker:
                 regular_indices.append(i)
 
         if len(weighted_indices) >= self.min_inliers:
-            # Place zone-proximate features first so RANSAC draws them with high priority
-            order = weighted_indices + regular_indices
+            # Duplicate zone-proximate features so uniform RANSAC sampling gives them genuine sampling priority
+            order = weighted_indices * 2 + regular_indices
             return src_pts[order], dst_pts[order], [matches[idx] for idx in order]
         return src_pts, dst_pts, matches
 
@@ -634,7 +637,8 @@ class AdaptiveZoneTracker:
             return
 
         # Camera returned to valid drift: refresh or clear stale proposals
-        if self.proposed_zones is not None and not self.drift_breached:
+        if result.drift_px <= self.max_drift_px:
+            self.drift_breached = False
             self.proposed_zones = None
             self.proposed_homography = None
 
@@ -677,6 +681,8 @@ class AdaptiveZoneTracker:
                 logger.error(f"[AdaptiveZones] Transformed zone '{zn}' failed validation: {m}. Update rejected.")
                 self.consecutive_bad_estimates += 1
                 self._recovery_start_time = None
+                if self.consecutive_bad_estimates >= self.max_consecutive_bad:
+                    self.status = AlignmentStatus.ZONES_UNVERIFIED
                 return
 
         # Atomic zone update in ZoneManager
@@ -706,7 +712,7 @@ class AdaptiveZoneTracker:
             if self._recovery_start_time is None:
                 self._recovery_start_time = timestamp
             elif (timestamp - self._recovery_start_time) >= self.recovery_good_sec:
-                if not self.drift_breached:
+                if not self.drift_breached and self.status != AlignmentStatus.UNVERIFIED_REFERENCE and not self.requires_operator_confirmation:
                     self.status = AlignmentStatus.ALIGNED if self.current_drift_px < 5.0 else AlignmentStatus.DRIFTING
                     # Note: requires_operator_confirmation is kept separate and only cleared by operator in confirm_alignment()
 
@@ -724,6 +730,7 @@ class AdaptiveZoneTracker:
         NEVER overwrites saved polygons or config.yaml on disk.
         """
         with self._lock:
+            self._mode_generation += 1
             # If reference was unverified at startup
             if self.status == AlignmentStatus.UNVERIFIED_REFERENCE:
                 self.status = AlignmentStatus.ALIGNED

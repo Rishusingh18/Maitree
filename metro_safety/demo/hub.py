@@ -546,6 +546,12 @@ class LiveHub:
     def toggle_buzzer_mute(self) -> Dict[str, Any]:
         """Toggle hardware buzzer mute state and publish state change event."""
         with self._lock:
+            if self.buzzer is None:
+                try:
+                    from metro_safety.escalation.buzzer import HardwareBuzzer
+                    self.buzzer = HardwareBuzzer(audio_enabled=True)
+                except Exception:
+                    pass
             if self.buzzer:
                 new_mute = self.buzzer.toggle_mute()
             else:
@@ -574,6 +580,12 @@ class LiveHub:
         with self._lock:
             self._last_test_pattern = pat
             self._last_test_time = time.time()
+            if self.buzzer is None:
+                try:
+                    from metro_safety.escalation.buzzer import HardwareBuzzer
+                    self.buzzer = HardwareBuzzer(audio_enabled=True)
+                except Exception:
+                    pass
             if self.buzzer:
                 self.buzzer.test_beep(pattern=pat)
 
@@ -697,6 +709,27 @@ class LiveHub:
         if tracker is not None:
             success, msg = tracker.confirm_alignment()
             return {"status": "ok" if success else "error", "message": msg}
+
+        # Check cross-process IPC file if producer is running in separate process
+        cmd_path = Path("data/cache/zone_confirm.cmd")
+        resp_path = Path("data/cache/zone_confirm.resp")
+        try:
+            cmd_path.parent.mkdir(parents=True, exist_ok=True)
+            if resp_path.exists():
+                resp_path.unlink()
+            cmd_path.write_text(str(time.time()), encoding="utf-8")
+            for _ in range(20):
+                time.sleep(0.05)
+                if resp_path.exists():
+                    try:
+                        res = json.loads(resp_path.read_text(encoding="utf-8"))
+                        resp_path.unlink()
+                        return res
+                    except Exception:
+                        pass
+        except Exception as _e:
+            logger.debug(f"IPC zone confirmation failed: {_e}")
+
         return {"status": "error", "message": "Zone tracker unavailable; alignment cannot be confirmed."}
 
 

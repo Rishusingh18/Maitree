@@ -149,7 +149,7 @@ def run_pipeline(
             model_name=cfg["perception"]["model_name"],
             confidence_threshold=cfg["perception"]["confidence_threshold"],
             device=cfg["perception"]["device"],
-            inference_size=int(cfg["perception"].get("inference_size", 320))
+            inference_size=int(cfg["perception"].get("inference_size", 480))
         )
         print(f"[Pipeline] Loaded YOLO pose detector ({cfg['perception']['model_name']})")
     except Exception as e:
@@ -242,20 +242,33 @@ def run_pipeline(
             # 2. Tracking
             tracked_dets = tracker.update(detections)
 
+            # Check for cross-process zone confirmation command
+            cmd_path = Path("data/cache/zone_confirm.cmd")
+            if cmd_path.exists():
+                try:
+                    cmd_path.unlink()
+                    c_ok, c_msg = zone_tracker.confirm_alignment()
+                    resp_path = Path("data/cache/zone_confirm.resp")
+                    resp_path.write_text(json.dumps({"status": "ok" if c_ok else "error", "message": c_msg}), encoding="utf-8")
+                except Exception:
+                    pass
+
             # Adaptive Zone Tracking: Non-blocking frame registration
             person_boxes = [d.box for d in tracked_dets] if tracked_dets else [d.box for d in detections]
             zone_tracker.submit_frame(frame.copy(), frame_idx, person_boxes, frame_ts)
             reg_result = zone_tracker.get_latest_result()
+            frame_zone_version = zm.zone_version
+            frame_zones_unverified = reg_result.zones_unverified
 
             # 3. Behavior Events & Gestures
             rule_evs = rule_clf.process_frame(frame_idx, frame_ts, tracked_dets, zm, train_state)
             gest_evs = gesture_det.process_frame(frame_idx, frame_ts, tracked_dets, zm, train_state)
             all_evs = rule_evs + gest_evs
 
-            # Tag events with zone tracking metadata
+            # Tag events with consistent geometry snapshot
             for ev in all_evs:
-                ev.zones_unverified = reg_result.zones_unverified
-                ev.zone_version = reg_result.zone_version
+                ev.zones_unverified = frame_zones_unverified
+                ev.zone_version = frame_zone_version
 
             # Per-frame escalation lifecycle: clear confirmed resolved tracks (present in safe platform with no active hazards)
             active_hazard_tracks = {ev.track_id for ev in all_evs if hasattr(ev, 'track_id')}
@@ -290,11 +303,11 @@ def run_pipeline(
                     dec.action_taken = f"[ZONES UNVERIFIED] {dec.action_taken}"
 
                 # Deduplication / Cooldown filter for notification & logging
-                if reg_result.zones_unverified:
+                if frame_zones_unverified:
                     z_name = getattr(ev, "zone", "platform")
                     ev_type_name = getattr(getattr(ev, "event_type", None), "name", str(getattr(ev, "event_type", "EVENT")))
                     z_key = (z_name, ev_type_name)
-                    if frame_ts - last_zone_event_time.get(z_key, 0.0) < zone_cooldown_sec:
+                    if z_key in last_zone_event_time and (frame_ts - last_zone_event_time[z_key]) < zone_cooldown_sec:
                         continue
                     last_zone_event_time[z_key] = frame_ts
 
@@ -308,8 +321,8 @@ def run_pipeline(
                     "buzzer_active": dec.buzzer_active,
                     "ets_triggered": dec.ets_triggered,
                     "latency_ms": dec.latency_ms,
-                    "zones_unverified": reg_result.zones_unverified,
-                    "zone_version": reg_result.zone_version
+                    "zones_unverified": frame_zones_unverified,
+                    "zone_version": frame_zone_version
                 }
                 events_logged.append(log_entry)
 
@@ -326,10 +339,10 @@ def run_pipeline(
                         "severity": dec.severity.value,
                         "confidence": getattr(ev, "confidence", 0.95),
                         "action": dec.action_taken,
-                        "is_demo": False,
+                        "is_demo": bool(is_demo),
                         "session_id": hub.session_id,
-                        "zones_unverified": reg_result.zones_unverified,
-                        "zone_version": reg_result.zone_version
+                        "zones_unverified": frame_zones_unverified,
+                        "zone_version": frame_zone_version
                     })
                 except Exception:
                     pass

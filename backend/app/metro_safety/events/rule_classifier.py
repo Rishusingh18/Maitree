@@ -54,6 +54,8 @@ class TrackStateMachine:
         self.current_event: EventType = EventType.NORMAL
         self.confirmed_fall: bool = False
         self.confirmed_jump: bool = False
+        self.fall_motion_induced: bool = False
+        self.jump_motion_induced: bool = False
 
         # Counters for hysteresis
         self.yellow_consecutive = 0
@@ -320,6 +322,14 @@ class RuleBasedEventClassifier:
                     min_jump_displacement=self.min_jump_displacement
                 )
 
+            if not camera_motion:
+                if self.track_machines[tid].fall_motion_induced:
+                    self.track_machines[tid].confirmed_fall = False
+                    self.track_machines[tid].fall_motion_induced = False
+                if self.track_machines[tid].jump_motion_induced:
+                    self.track_machines[tid].confirmed_jump = False
+                    self.track_machines[tid].jump_motion_induced = False
+
             ev = self.track_machines[tid].update(
                 frame_idx=frame_idx,
                 timestamp=timestamp,
@@ -330,6 +340,11 @@ class RuleBasedEventClassifier:
             if ev:
                 ev.camera_motion = bool(camera_motion)
                 ev.motion_reason = str(motion_reason)
+                if camera_motion:
+                    if self.track_machines[tid].confirmed_fall:
+                        self.track_machines[tid].fall_motion_induced = True
+                    if self.track_machines[tid].confirmed_jump:
+                        self.track_machines[tid].jump_motion_induced = True
                 events.append(ev)
 
         # Prune inactive tracks after a bounded recovery interval (30 frames / ~1 second)

@@ -255,10 +255,11 @@ def calibrate_zones(
             ref_poly_path = ref_dir / ref_poly_name
 
             # Staged temporary files
-            tmp_img_path = ref_dir / f"{ref_img_name}.tmp"
-            tmp_poly_path = ref_dir / f"{ref_poly_name}.tmp"
-            tmp_cfg_path = cfg_file.with_suffix(".yaml.tmp")
+            tmp_img_path = ref_dir / f"{ref_img_path.stem}.tmp{ref_img_path.suffix}"
+            tmp_poly_path = ref_dir / f"{ref_poly_path.stem}.tmp{ref_poly_path.suffix}"
+            tmp_cfg_path = cfg_file.with_name(f"{cfg_file.stem}.tmp{cfg_file.suffix}")
 
+            backups = {}
             try:
                 # 1. Write staged image
                 success_img = cv2.imwrite(str(tmp_img_path), reference_frame)
@@ -279,16 +280,41 @@ def calibrate_zones(
                 h, w = reference_frame.shape[:2]
                 cfg["system"]["input_resolution"] = [int(w), int(h)]
                 cfg["system"]["source"] = source_uri
-                cfg["reference_frame"] = str(ref_img_path).replace("\\", "/")
+                ref_str = str(ref_img_path).replace("\\", "/")
+                cfg["reference_frame"] = ref_str
+                if "adaptive_zones" not in cfg:
+                    cfg["adaptive_zones"] = {}
+                cfg["adaptive_zones"]["reference_frame"] = ref_str
 
                 with open(tmp_cfg_path, "w", encoding="utf-8") as f:
                     yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
 
-                # 4. Atomic publish only after all writes succeed
+                # 4. Atomic publish with rollback backup
+                for target in [ref_img_path, ref_poly_path, cfg_file]:
+                    if target.exists():
+                        bak = target.with_name(f"{target.name}.orig")
+                        shutil.copy2(str(target), str(bak))
+                        backups[target] = bak
+
                 shutil.move(str(tmp_img_path), str(ref_img_path))
                 shutil.move(str(tmp_poly_path), str(ref_poly_path))
                 shutil.move(str(tmp_cfg_path), str(cfg_file))
+
+                # Clean up backups on success
+                for bak in backups.values():
+                    if bak.exists():
+                        try:
+                            bak.unlink()
+                        except Exception:
+                            pass
             except Exception as write_err:
+                # Rollback from backups if published files were corrupted
+                for target, bak in backups.items():
+                    if bak.exists():
+                        try:
+                            shutil.move(str(bak), str(target))
+                        except Exception:
+                            pass
                 for tmp_p in [tmp_img_path, tmp_poly_path, tmp_cfg_path]:
                     if tmp_p.exists():
                         try:

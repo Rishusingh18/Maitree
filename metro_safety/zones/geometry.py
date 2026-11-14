@@ -112,7 +112,6 @@ class ZoneManager:
         self.zones: Dict[str, Zone] = {}
         self.invalid_zones: Dict[str, str] = {}
         self.zone_version: int = 1
-        self.baseline_zones: Dict[str, List[List[float]]] = {k: [list(pt) for pt in v] for k, v in zone_config.items()}
 
         for name, poly in zone_config.items():
             if not poly or len(poly) < 3:
@@ -135,6 +134,8 @@ class ZoneManager:
                     raise ValueError(f"Cannot initialize ZoneManager: saved zone '{name}' is invalid ({err_msg}). Refusing to use invalid zone silently.")
             else:
                 self.zones[name] = Zone(name, [tuple(pt) for pt in poly], strict_validate=True)
+
+        self.baseline_zones: Dict[str, List[List[float]]] = self.get_polygons()
 
     def get_zone_for_point(self, point: Tuple[float, float]) -> str:
         """Return the highest priority zone containing the point, or 'outside'.

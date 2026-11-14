@@ -124,6 +124,8 @@ class EscalationEngine:
                 buzzer_active = True
                 cr_alert = True
                 ets_active = False
+                if event.track_id in self.active_intrusions:
+                    del self.active_intrusions[event.track_id]
                 self.active_audible_hazards[event.track_id] = ev_type
                 self.buzzer.activate(self.platform_id, pattern="PULSED")
                 self._safe_send_alert(event, severity, action_msg)

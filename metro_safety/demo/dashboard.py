@@ -868,7 +868,9 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
             req_key = request.headers.get("X-API-Key") or request.args.get("key")
             if req_key != expected_key:
                 return jsonify({"status": "error", "message": "Unauthorized"}), 403
-        return jsonify(active_hub.confirm_zone_alignment())
+        res = active_hub.confirm_zone_alignment()
+        status_code = 200 if res.get("status") == "ok" else 400
+        return jsonify(res), status_code
 
     return app
 

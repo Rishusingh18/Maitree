@@ -100,12 +100,68 @@ async def process_control(request: Request, authorized: bool = Depends(get_api_k
         logger.error(f"Control action error: {e}")
         return JSONResponse({"status": "error", "message": str(e)}, status_code=400)
 
+@app.post("/api/acknowledge", tags=["Operator Controls"])
+async def api_acknowledge(authorized: bool = Depends(get_api_key)):
+    """Acknowledge active audible alarm and silence buzzer."""
+    hub = get_global_hub()
+    return JSONResponse(hub.acknowledge_alarm())
+
+@app.post("/api/buzzer/toggle_mute", tags=["Operator Controls"])
+async def api_buzzer_toggle_mute(authorized: bool = Depends(get_api_key)):
+    """Toggle hardware buzzer mute state."""
+    hub = get_global_hub()
+    return JSONResponse(hub.toggle_buzzer_mute())
+
+@app.post("/api/buzzer/test", tags=["Operator Controls"])
+async def api_buzzer_test(request: Request, authorized: bool = Depends(get_api_key)):
+    """Dispatch operator test buzzer beep."""
+    hub = get_global_hub()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    pattern = body.get("pattern", "L2") if isinstance(body, dict) else "L2"
+    return JSONResponse(hub.test_buzzer(pattern=pattern))
+
+@app.post("/api/ets/trigger", tags=["Operator Controls"])
+async def api_ets_trigger(authorized: bool = Depends(get_api_key)):
+    """Manual trigger of Emergency Trip Switch (traction power cut)."""
+    hub = get_global_hub()
+    return JSONResponse(hub.trip_ets())
+
+@app.post("/api/ets/reset", tags=["Operator Controls"])
+async def api_ets_reset(authorized: bool = Depends(get_api_key)):
+    """Reset Emergency Trip Switch to energize traction power."""
+    hub = get_global_hub()
+    return JSONResponse(hub.reset_ets())
+
+@app.post("/api/train_state", tags=["Operator Controls"])
+async def api_train_state(request: Request, authorized: bool = Depends(get_api_key)):
+    """Override current train state (ABSENT, APPROACHING, DOCKED, DEPARTING)."""
+    hub = get_global_hub()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    state = body.get("state", "ABSENT") if isinstance(body, dict) else "ABSENT"
+    return JSONResponse(hub.set_train_state(str(state)))
+
+@app.get("/api/snapshot", tags=["Live Stream"])
+def get_snapshot():
+    """Return single JPEG snapshot of current camera feed."""
+    hub = get_global_hub()
+    frame_bytes = hub.get_jpeg_frame()
+    if not frame_bytes:
+        return Response(content=b"", status_code=503)
+    return Response(content=frame_bytes, media_type="image/jpeg")
+
 @app.post("/api/zones/confirm", tags=["Operator Controls"])
 async def confirm_zones(authorized: bool = Depends(get_api_key)):
     """Operator confirmation of current or proposed zone alignment."""
     hub = get_global_hub()
     res = hub.confirm_zone_alignment()
-    return JSONResponse(res)
+    status_code = 200 if res.get("status") == "ok" else 400
+    return JSONResponse(res, status_code=status_code)
 
 @app.api_route("/api/zones/confirm", methods=["GET"], tags=["Operator Controls"])
 async def confirm_zones_get():

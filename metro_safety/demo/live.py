@@ -174,7 +174,7 @@ def run_live_pipeline(
     )
 
     # YOLO pose model with CPU performance tuning
-    inference_size = int(cfg["perception"].get("inference_size", 320))
+    inference_size = int(cfg["perception"].get("inference_size", 480))
     frame_skip = max(1, int(cfg["perception"].get("frame_skip", 1)))
     pose_detector = YOLOPoseDetector(
         model_name=cfg["perception"]["model_name"],
@@ -341,13 +341,25 @@ def run_live_pipeline(
                     zone_tracker.on_first_frame(frame)
                 zone_tracker.set_demo_mode(is_demo)
 
+                cmd_path = Path("data/cache/zone_confirm.cmd")
+                if cmd_path.exists():
+                    try:
+                        cmd_path.unlink()
+                        c_ok, c_msg = zone_tracker.confirm_alignment()
+                        resp_path = Path("data/cache/zone_confirm.resp")
+                        resp_path.write_text(json.dumps({"status": "ok" if c_ok else "error", "message": c_msg}), encoding="utf-8")
+                    except Exception:
+                        pass
+
                 person_boxes = [trk.box for trk in tracks] if tracks else [d.box for d in detections]
                 zone_tracker.submit_frame(frame.copy(), frame_idx, person_boxes, frame_ts)
                 reg_result = zone_tracker.get_latest_result()
+                frame_zone_version = zm.zone_version
+                frame_zones_unverified = reg_result.zones_unverified
 
                 for ev in all_events:
-                    ev.zones_unverified = reg_result.zones_unverified
-                    ev.zone_version = reg_result.zone_version
+                    ev.zones_unverified = frame_zones_unverified
+                    ev.zone_version = frame_zone_version
 
                 for ev in all_events:
                     try:
@@ -364,9 +376,9 @@ def run_live_pipeline(
                             continue
 
                         # Dual cooldown during UNVERIFIED state to prevent alert storms
-                        if reg_result.zones_unverified:
+                        if frame_zones_unverified:
                             z_key = (ev.zone, ev.event_type.name)
-                            if frame_ts - last_zone_event_time.get(z_key, 0.0) < zone_cooldown_sec:
+                            if z_key in last_zone_event_time and (frame_ts - last_zone_event_time[z_key]) < zone_cooldown_sec:
                                 continue
                             last_zone_event_time[z_key] = frame_ts
 
