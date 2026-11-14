@@ -68,3 +68,4 @@ class ZoneManager:
                 cv2.putText(frame, name.upper(), (cX - 30, cY), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
 
         return cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+

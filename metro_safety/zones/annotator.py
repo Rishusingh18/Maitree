@@ -78,3 +78,4 @@ if __name__ == "__main__":
     parser.add_argument("--out", type=str, default="config_zones.yaml", help="Output YAML path")
     args = parser.parse_args()
     run_annotator(args.image, args.out)
+

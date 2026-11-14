@@ -72,3 +72,4 @@ class YOLOPoseDetector(BasePoseDetector):
             ))
 
         return detections
+

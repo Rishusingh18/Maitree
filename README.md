@@ -52,13 +52,83 @@ flowchart TD
 ## 📊 Evaluation & Benchmark Results
 Evaluated on comprehensive synthetic kinematic sequences simulating standard walking, falls, jumps, line crossings, and distress gestures:
 - **Baseline Target (DMRC RFP Spec)**: `> 90% Accuracy`
-- **Rule-Based State Machine Accuracy**: `73.6%` (High precision, strict hysteresis)
+- **Rule-Based State Machine Accuracy**: `94.4%` (Target Met: **YES**)
 - **Learned Temporal Classifier (GBDT) Accuracy**: `100.0%` (Target Met: **YES**)
 - **Mean Processing Speed**: `436.0 FPS` (Feature pipeline), `>35 FPS` (Full YOLOv8n CPU pipeline)
 - **Mean Escalation Latency**: `0.53 ms` (95th percentile: `0.98 ms`)
 - **False Alert Rate on Normal Footage**: `0.00 false alerts / hour`
 
 Confusion matrix visualization is saved in [eval_results/confusion_matrices.png](file:///c:/Users/kunal/VIHAAN%20X/eval_results/confusion_matrices.png) and full metrics are detailed in [eval_results/EVALUATION.md](file:///c:/Users/kunal/VIHAAN%20X/eval_results/EVALUATION.md).
+
+---
+
+## 📱 Using a Phone as a Simulated CCTV Camera
+
+You can use any Android phone or iPhone connected to your local Wi-Fi network as a live CCTV camera input for the platform safety system.
+
+### Android Setup (IP Webcam)
+1. Install **IP Webcam** (by Pavel Khlebovich) from Google Play Store.
+2. Open the app, scroll to the bottom, and tap **"Start server"**.
+3. The app displays an IPv4 address on screen (e.g., `http://192.168.1.32:8080`).
+4. Append `/video` to obtain the MJPEG video stream URL:
+   ```
+   http://192.168.1.32:8080/video
+   ```
+
+### iPhone Setup (Webcam / RTSP apps)
+1. Install **DroidCam Webcam & OBS**, **iVCam**, or **Live-Reporter** from the Apple App Store.
+2. In DroidCam: Start the app on the same Wi-Fi network. DroidCam displays `WiFi IP: 192.168.1.XX` and `Port: 4747`. Use:
+   ```
+   http://192.168.1.XX:4747/video
+   ```
+3. Alternatively, any RTSP streaming camera app providing `rtsp://<phone-ip>:<port>/live` can be used directly.
+
+### Running with Live Phone Stream
+The live stream URL is set by default in `config.yaml` under `system.source`:
+```yaml
+system:
+  source: "http://192.168.1.32:8080/video"
+```
+
+To run the live pipeline on your phone stream:
+```bash
+# Uses the default source in config.yaml (http://192.168.1.32:8080/video)
+python -m metro_safety.demo.run
+
+# Or explicitly pass the --source flag:
+python -m metro_safety.demo.run --source http://192.168.1.32:8080/video
+
+# To process an attached USB webcam:
+python -m metro_safety.demo.run --source 0
+
+# To process a pre-recorded clip:
+python -m metro_safety.demo.run --source demo_clips/demo_fall.mp4
+```
+
+### Live Features & Resilience:
+- **Zero-Lag Real-Time Threaded Reader**: Always retains only the latest frame (buffer size 1, stale frames dropped) so video processing latency never drifts behind reality.
+- **On-Screen Live Telemetry HUD**: Displays real-time **FPS** and **End-to-End Latency (ms)** alongside track IDs, pose skeletons, zone polygons, and severity banners.
+- **Auto-Reconnect with Exponential Backoff**: If Wi-Fi drops or the camera app sleeps, the background worker automatically retries connecting (1s up to 16s) without crashing the pipeline.
+- **Automatic Fallback Protection**: If the network stream is unreachable, the system automatically falls back to pre-recorded footage (`demo_clips/demo_fall.mp4`) with a clear on-screen notice, ensuring 100% operational continuity.
+
+---
+
+## 📐 Live Camera Zone Calibration Tool
+
+To define metro zones (`platform`, `yellow_band`, `track_bed`, `danger_zone`) specifically for your phone's camera view:
+
+```bash
+python -m metro_safety.zones.calibrate --source http://192.168.1.32:8080/video
+```
+
+**Calibration Workflow:**
+1. Aim your phone at the desired scene. The live stream appears in a calibration window.
+2. Press `SPACE` to capture a still reference frame from your phone camera.
+3. For each zone (`platform` -> `yellow_band` -> `track_bed` -> `danger_zone`):
+   - Left-click points in clockwise/counter-clockwise order around the zone perimeter.
+   - Press `c` to complete and close the polygon.
+   - Press `r` to clear points if you make a mistake.
+4. Press `s` to save the new polygon coordinates directly into `config.yaml`. The system will now use these exact physical boundaries.
 
 ---
 
@@ -129,3 +199,4 @@ pytest tests -v
 1. **Theft & Bag-Snatching Detection**: Temporal velocity vector correlation between two persons followed by rapid acceleration away from the victim.
 2. **Harassment & Cornering Behavior**: Spatial proximity clustering and sustained path blocking along platform walls or dead zones.
 3. **Crowd Surge & Crush Forecasting**: Real-time crowd density heatmaps near platform screen doors during peak interchange hours.
+

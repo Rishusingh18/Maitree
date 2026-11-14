@@ -249,3 +249,4 @@ def run_evaluation_suite(output_dir: Path | str = "eval_results") -> Dict[str, A
 
 if __name__ == "__main__":
     run_evaluation_suite()
+

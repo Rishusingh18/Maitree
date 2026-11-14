@@ -34,3 +34,4 @@ def test_wrists_crossed_overhead(gesture_env):
     assert len(events) >= 1
     assert events[0].event_type == EventType.DISTRESS_GESTURE
     assert events[0].metadata["gesture_variant"] == "WRISTS_CROSSED_OVERHEAD"
+

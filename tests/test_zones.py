@@ -24,3 +24,4 @@ def test_point_in_track_bed(zone_manager):
 def test_is_in_zone(zone_manager):
     assert zone_manager.is_in_zone((300, 225), "yellow_band") is True
     assert zone_manager.is_in_zone((300, 225), "platform") is False
+

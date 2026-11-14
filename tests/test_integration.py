@@ -16,10 +16,11 @@ def test_pipeline_end_to_end(tmp_path):
     assert video_path.exists()
 
     run_pipeline(
-        video_source=str(video_path),
+        source_uri=str(video_path),
         output_video=str(out_video),
         output_log=str(out_log),
-        train_state_val="APPROACHING"
+        train_state_val="APPROACHING",
+        show_window=False
     )
 
     assert out_video.exists()
@@ -29,3 +30,4 @@ def test_pipeline_end_to_end(tmp_path):
         log_data = json.load(f)
         assert "events" in log_data
         assert log_data["frames_processed"] == 35
+

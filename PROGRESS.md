@@ -12,8 +12,9 @@
 | **Phase 7** | Escalation Engine & Hardware Simulators | **DONE** | `metro_safety/escalation/`, `engine.py`, `adapters.py` (ETS, buzzer, audit) |
 | **Phase 8** | Evaluation & Ablation Suite | **DONE** | `eval_results/EVALUATION.md`, `confusion_matrices.png`, 100% GBDT acc |
 | **Phase 9** | Demo CLI + Streamlit/Flask Dashboard | **DONE** | `demo/run.py`, 3 pre-generated clips in `demo_clips/`, `demo/dashboard.py` |
-| **Phase 10** | Unit & Integration Test Suite | **DONE** | 13/13 unit and integration tests passing (`pytest tests -v`) |
+| **Phase 10** | Unit & Integration Test Suite | **DONE** | 17/17 unit and integration tests passing (`pytest tests -v`) |
 | **Phase 11** | Self-Review, Documentation & SUMMARY.md | **DONE** | Complete `README.md`, `ASSUMPTIONS.md`, `SUMMARY.md` |
+| **Phase 12** | Live Camera Input & Interactive Calibration | **DONE** | Threaded `FrameSource` (HTTP/RTSP/webcam/file), buffer size 1 drop stale, auto-reconnect backoff, live telemetry HUD (FPS/latency), fallback video, `calibrate.py` |
 
 ---
-**Overall Status**: All 12 project sections fully implemented, verified, tested, and documented.
+**Overall Status**: All core project sections and live camera streaming extensions fully implemented, verified, tested (17/17 passed), and documented. Model benchmark accuracy: 94.4% (Rule-Based), 100.0% (Learned GBDT).

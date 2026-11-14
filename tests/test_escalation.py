@@ -53,3 +53,4 @@ def test_ets_human_confirmation_interlock():
     res = ets.confirm_by_operator()
     assert res is True
     assert ets.is_tripped() is True
+

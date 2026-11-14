@@ -42,3 +42,4 @@ class SafetyEvent:
             "evidence_frames": self.evidence_frames,
             "metadata": self.metadata
         }
+

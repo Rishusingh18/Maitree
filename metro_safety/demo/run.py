@@ -1,11 +1,14 @@
 """Single-command end-to-end pipeline runner for AI Metro Platform Safety System.
-Produces:
-- Annotated output video with zones, bounding boxes, pose keypoints, event labels, severity banners, buzzer/alert indicators.
-- JSON event log.
-Usage:
-python -m metro_safety.demo.run --video <path_or_keyword> --out-video <out.mp4> --out-log <events.json>
+Supports:
+- Live camera streams (HTTP MJPEG/RTSP from phone IP webcam apps, or webcam index 0)
+- Local video files (with fallback)
+- Real-time display window with live annotations (zones, tracks, events, severity banners, buzzer/ETS indicators)
+- On-screen live FPS and end-to-end processing latency counter
+- Threaded frame grabber dropping stale frames (buffer size 1)
+- Automatic reconnection with exponential backoff on dropped streams
+- JSON audit log & optional output video recording
 """
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Union
 import argparse
 from pathlib import Path
 import json
@@ -16,6 +19,7 @@ import cv2
 from metro_safety.config import load_config
 from metro_safety.zones.geometry import ZoneManager
 from metro_safety.perception.train_state import TrainState, SimulatedTrainStateProvider
+from metro_safety.perception.frame_source import create_frame_source, FrameSource, VideoFileSource
 from metro_safety.tracking.tracker import ByteTracker
 from metro_safety.events.rule_classifier import RuleBasedEventClassifier
 from metro_safety.events.learned_classifier import LearnedEventClassifier
@@ -32,13 +36,21 @@ COCO_PAIRS = [
 ]
 
 def run_pipeline(
-    video_source: str,
-    output_video: Path | str = "demo_output.mp4",
+    source_uri: Optional[Union[str, int]] = None,
+    output_video: Optional[Union[Path, str]] = None,
     output_log: Path | str = "demo_events.json",
     train_state_val: str = "ABSENT",
-    config_path: Optional[str] = None
+    config_path: Optional[str] = None,
+    show_window: bool = True,
+    max_frames: Optional[int] = None,
+    fallback_video: str = "demo_clips/demo_fall.mp4",
+    loop_video: bool = False
 ):
     cfg = load_config(config_path)
+
+    # Determine source URI: CLI flag takes precedence, else config.yaml, else fallback
+    resolved_source = source_uri if source_uri is not None else cfg["system"].get("source", "http://192.168.1.32:8080/video")
+
     zm = ZoneManager(cfg["zones"])
     tracker = ByteTracker(
         track_high_thresh=cfg["tracking"]["track_high_thresh"],
@@ -59,33 +71,17 @@ def run_pipeline(
     )
     train_state = TrainState(train_state_val)
 
-    # Resolve video source
-    video_path = Path(video_source)
-    if not video_path.exists():
-        # Check standard demo clips
-        alias_map = {
-            "fall": "demo_clips/demo_fall.mp4",
-            "jump": "demo_clips/demo_jump.mp4",
-            "distress": "demo_clips/demo_distress.mp4",
-            "synthetic": "demo_clips/demo_fall.mp4"
-        }
-        mapped = alias_map.get(video_source.lower(), "demo_clips/demo_fall.mp4")
-        video_path = Path(mapped)
+    # Initialize FrameSource (threaded, buffer size 1, auto-reconnect, with fallback)
+    print(f"[Pipeline] Initializing FrameSource for: {resolved_source}")
+    frame_source: FrameSource = create_frame_source(
+        source_uri=resolved_source,
+        fallback_path=fallback_video,
+        allow_fallback=True,
+        loop_video=loop_video
+    )
+    print(f"[Pipeline] Active source: {frame_source.source_name}")
 
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open video source: {video_path}")
-
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-
-    out_v_path = Path(output_video)
-    out_v_path.parent.mkdir(parents=True, exist_ok=True)
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    writer = cv2.VideoWriter(str(out_v_path), fourcc, fps, (w, h))
-
-    # Initialize YOLO pose if available, fallback to mock detector
+    # Initialize YOLO pose model behind abstract interface
     pose_detector = None
     try:
         from metro_safety.perception.yolo_pose import YOLOPoseDetector
@@ -94,168 +90,254 @@ def run_pipeline(
             confidence_threshold=cfg["perception"]["confidence_threshold"],
             device=cfg["perception"]["device"]
         )
+        print(f"[Pipeline] Loaded YOLO pose detector ({cfg['perception']['model_name']})")
     except Exception as e:
-        print(f"[Notice] YOLO pose not loaded ({e}), using synthetic detection tracker.")
+        print(f"[Pipeline] [Notice] YOLO model load failed ({e}), using synthetic detection tracker.")
+
+    # Initialize optional video recorder
+    writer = None
+    window_name = f"DMRC CCTV Safety System - [{cfg['system']['camera_id']}] (Press 'q' to stop)"
+    if show_window:
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
     events_logged = []
     frame_idx = 0
-    t_start = time.time()
+    fps_history = []
+    latency_history = []
+    t_prev_frame = time.perf_counter()
 
-    print(f"Processing video: {video_path} -> {out_v_path}...")
+    try:
+        while True:
+            t_frame_start = time.perf_counter()
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+            # Read latest non-stale frame from threaded source
+            ret, frame, frame_ts = frame_source.read()
+            if not ret or frame is None:
+                # If reading a non-looping video file, we have reached EOF
+                if isinstance(frame_source, VideoFileSource) and not frame_source.loop:
+                    print(f"[Pipeline] End of video reached after {frame_idx} frames.")
+                    break
+                # If reading live stream, wait briefly for new frame
+                time.sleep(0.01)
+                continue
 
-        timestamp = frame_idx / float(fps)
+            h, w = frame.shape[:2]
 
-        # 1. Perception
-        detections = []
-        if pose_detector and pose_detector._model is not None:
-            detections = pose_detector.detect(frame)
-        else:
-            # Synthetic / fallback keypoint detector via color thresholding of skeleton points
-            # If detecting synthetic video generated by our simulator:
-            # Search for skeleton orange joint circles (0, 180, 255)
-            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-            mask = cv2.inRange(hsv, np.array([10, 150, 150]), np.array([25, 255, 255]))
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            pts = []
-            for cnt in contours:
-                if 2 <= cv2.contourArea(cnt) <= 120:
-                    M = cv2.moments(cnt)
-                    if M["m00"] > 0:
-                        pts.append([M["m10"] / M["m00"], M["m01"] / M["m00"], 0.9])
-            if len(pts) >= 6:
-                pts_arr = np.array(pts)
-                x1, y1 = np.min(pts_arr[:, 0]) - 15, np.min(pts_arr[:, 1]) - 20
-                x2, y2 = np.max(pts_arr[:, 0]) + 15, np.max(pts_arr[:, 1]) + 15
-                box = np.array([x1, y1, x2, y2], dtype=np.float32)
-                # Fit 17 keypoints
-                kpts = np.zeros((17, 3), dtype=np.float32)
-                for ki in range(17):
-                    kpts[ki] = [np.mean(pts_arr[:, 0]), np.mean(pts_arr[:, 1]), 0.8]
-                if len(pts) >= 15:
-                    sorted_by_y = pts_arr[np.argsort(pts_arr[:, 1])]
-                    kpts[0] = sorted_by_y[0]   # nose (top)
-                    kpts[15] = sorted_by_y[-2] # ankle
-                    kpts[16] = sorted_by_y[-1] # ankle
-                detections = [Detection(box=box, confidence=0.92, keypoints=kpts)]
+            # Lazy initialize video writer if output path requested
+            if output_video and writer is None:
+                out_v_path = Path(output_video)
+                out_v_path.parent.mkdir(parents=True, exist_ok=True)
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                writer = cv2.VideoWriter(str(out_v_path), fourcc, 25.0, (w, h))
 
-        # 2. Tracking
-        tracked_dets = tracker.update(detections)
+            # 1. Perception Detection
+            detections = []
+            if pose_detector and pose_detector._model is not None:
+                detections = pose_detector.detect(frame)
+            else:
+                # Fallback synthetic detection for simulated clips
+                hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+                mask = cv2.inRange(hsv, np.array([10, 150, 150]), np.array([25, 255, 255]))
+                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                pts = []
+                for cnt in contours:
+                    if 2 <= cv2.contourArea(cnt) <= 120:
+                        M = cv2.moments(cnt)
+                        if M["m00"] > 0:
+                            pts.append([M["m10"] / M["m00"], M["m01"] / M["m00"], 0.9])
+                if len(pts) >= 6:
+                    pts_arr = np.array(pts)
+                    x1, y1 = np.min(pts_arr[:, 0]) - 15, np.min(pts_arr[:, 1]) - 20
+                    x2, y2 = np.max(pts_arr[:, 0]) + 15, np.max(pts_arr[:, 1]) + 15
+                    box = np.array([x1, y1, x2, y2], dtype=np.float32)
+                    kpts = np.zeros((17, 3), dtype=np.float32)
+                    for ki in range(17):
+                        kpts[ki] = [np.mean(pts_arr[:, 0]), np.mean(pts_arr[:, 1]), 0.8]
+                    if len(pts) >= 15:
+                        sorted_by_y = pts_arr[np.argsort(pts_arr[:, 1])]
+                        kpts[0] = sorted_by_y[0]
+                        kpts[15] = sorted_by_y[-2]
+                        kpts[16] = sorted_by_y[-1]
+                    detections = [Detection(box=box, confidence=0.92, keypoints=kpts)]
 
-        # 3. Behavior Events & Gestures
-        rule_evs = rule_clf.process_frame(frame_idx, timestamp, tracked_dets, zm, train_state)
-        gest_evs = gesture_det.process_frame(frame_idx, timestamp, tracked_dets, zm, train_state)
-        all_evs = rule_evs + gest_evs
+            # 2. Tracking
+            tracked_dets = tracker.update(detections)
 
-        # 4. Escalation
-        current_decision = None
-        for ev in all_evs:
-            dec = escalation.evaluate(ev, current_time=timestamp)
-            current_decision = dec
-            events_logged.append({
-                "frame": frame_idx,
-                "timestamp": round(timestamp, 3),
-                "event": ev.to_dict(),
-                "severity": dec.severity.value,
-                "action": dec.action_taken,
-                "buzzer_active": dec.buzzer_active,
-                "ets_triggered": dec.ets_triggered
-            })
+            # 3. Behavior Events & Gestures
+            rule_evs = rule_clf.process_frame(frame_idx, frame_ts, tracked_dets, zm, train_state)
+            gest_evs = gesture_det.process_frame(frame_idx, frame_ts, tracked_dets, zm, train_state)
+            all_evs = rule_evs + gest_evs
 
-        # 5. Visual Annotation
-        annotated = zm.draw_zones(frame, alpha=0.25)
+            # 4. Closed-Loop Escalation
+            current_decision = None
+            for ev in all_evs:
+                dec = escalation.evaluate(ev, current_time=frame_ts)
+                current_decision = dec
+                events_logged.append({
+                    "frame": frame_idx,
+                    "timestamp": round(frame_ts, 3),
+                    "event": ev.to_dict(),
+                    "severity": dec.severity.value,
+                    "action": dec.action_taken,
+                    "buzzer_active": dec.buzzer_active,
+                    "ets_triggered": dec.ets_triggered,
+                    "latency_ms": dec.latency_ms
+                })
 
-        # Draw Person & Skeleton
-        for det in tracked_dets:
-            bx = det.box.astype(int)
-            tid = det.track_id or 0
-            foot = det.foot_anchor
-            zone_name = zm.get_zone_for_point(foot)
+            # Calculate live FPS & end-to-end processing latency
+            t_now = time.perf_counter()
+            frame_latency_ms = (t_now - t_frame_start) * 1000.0
+            latency_history.append(frame_latency_ms)
+            if len(latency_history) > 30:
+                latency_history.pop(0)
 
-            # Bounding box & ID
-            cv2.rectangle(annotated, (bx[0], bx[1]), (bx[2], bx[3]), (0, 255, 0), 2)
-            cv2.putText(annotated, f"ID:{tid} [{zone_name}]", (bx[0], max(15, bx[1] - 8)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-            # Anchor point
-            cv2.circle(annotated, (int(foot[0]), int(foot[1])), 5, (0, 0, 255), -1)
+            dt_fps = t_now - t_prev_frame
+            t_prev_frame = t_now
+            instant_fps = (1.0 / dt_fps) if dt_fps > 0 else 25.0
+            fps_history.append(instant_fps)
+            if len(fps_history) > 30:
+                fps_history.pop(0)
+            avg_fps = float(np.mean(fps_history))
+            avg_lat_ms = float(np.mean(latency_history))
 
-            # Keypoints skeleton if present
-            if det.keypoints is not None:
-                for p1_i, p2_i in COCO_PAIRS:
-                    p1 = det.keypoints[p1_i]
-                    p2 = det.keypoints[p2_i]
-                    if p1[2] > 0.4 and p2[2] > 0.4:
-                        cv2.line(annotated, (int(p1[0]), int(p1[1])), (int(p2[0]), int(p2[1])), (255, 255, 0), 1)
+            # 5. Visual Rendering & Live Annotation
+            annotated = zm.draw_zones(frame, alpha=0.25)
 
-        # Severity Alert Banner
-        banner_h = 60
-        top_banner = np.zeros((banner_h, w, 3), dtype=np.uint8)
+            # Draw tracked persons
+            for det in tracked_dets:
+                bx = det.box.astype(int)
+                tid = det.track_id or 0
+                foot = det.foot_anchor
+                zone_name = zm.get_zone_for_point(foot)
 
-        sev = current_decision.severity if current_decision else SeverityLevel.NORMAL
-        if sev == SeverityLevel.L3:
-            banner_color = (0, 0, 220)      # Bright Red
-            status_text = "LEVEL 3 EMERGENCY: TRAIN STOP RECOMMENDED / ETS TRIPPED"
-        elif sev == SeverityLevel.L2:
-            banner_color = (0, 140, 255)    # Orange
-            status_text = "LEVEL 2 ALERT: PERSON ON TRACK BED (BUZZER + CONTROL ROOM)"
-        elif sev == SeverityLevel.L1:
-            banner_color = (0, 220, 240)    # Yellow
-            status_text = "LEVEL 1 WARNING: YELLOW LINE CROSSED (PLATFORM BUZZER)"
-        elif sev == SeverityLevel.DISTRESS:
-            banner_color = (180, 0, 180)    # Purple
-            status_text = "SILENT DISTRESS SIGNAL DETECTED: DISPATCHING SECURITY"
-        else:
-            banner_color = (30, 140, 30)    # Green
-            status_text = f"PLATFORM SECURE | TRAIN: {train_state.value}"
+                # Color box depending on zone
+                box_color = (0, 0, 255) if zone_name in ["track_bed", "danger_zone"] else ((0, 255, 255) if zone_name == "yellow_band" else (0, 255, 0))
+                cv2.rectangle(annotated, (bx[0], bx[1]), (bx[2], bx[3]), box_color, 2)
+                cv2.putText(annotated, f"ID:{tid} [{zone_name.upper()}]", (bx[0], max(18, bx[1] - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, box_color, 2)
+                cv2.circle(annotated, (int(foot[0]), int(foot[1])), 5, (0, 0, 255), -1)
 
-        cv2.rectangle(annotated, (0, 0), (w, banner_h), banner_color, -1)
-        cv2.putText(annotated, status_text, (15, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
+                # COCO Skeleton
+                if det.keypoints is not None:
+                    for p1_i, p2_i in COCO_PAIRS:
+                        p1 = det.keypoints[p1_i]
+                        p2 = det.keypoints[p2_i]
+                        if p1[2] > 0.35 and p2[2] > 0.35:
+                            cv2.line(annotated, (int(p1[0]), int(p1[1])), (int(p2[0]), int(p2[1])), (255, 255, 0), 2)
 
-        # Hardware Indicators (Buzzer & ETS)
-        buzzer_on = escalation.buzzer.is_active(escalation.platform_id)
-        ets_on = escalation.trip_switch.is_tripped()
+            # Severity Banner
+            banner_h = 75
+            sev = current_decision.severity if current_decision else SeverityLevel.NORMAL
+            if sev == SeverityLevel.L3:
+                banner_color = (0, 0, 220)      # Bright Red
+                status_text = "LEVEL 3 EMERGENCY: TRAIN STOP RECOMMENDED / ETS TRIPPED"
+            elif sev == SeverityLevel.L2:
+                banner_color = (0, 140, 255)    # Orange
+                status_text = "LEVEL 2 ALERT: PERSON ON TRACK (BUZZER + CONTROL ROOM)"
+            elif sev == SeverityLevel.L1:
+                banner_color = (0, 220, 240)    # Yellow
+                status_text = "LEVEL 1 WARNING: YELLOW LINE CROSSED (PLATFORM BUZZER)"
+            elif sev == SeverityLevel.DISTRESS:
+                banner_color = (180, 0, 180)    # Purple
+                status_text = "SILENT DISTRESS GESTURE: DISPATCHING STATION SECURITY"
+            else:
+                banner_color = (30, 130, 30)    # Green
+                status_text = f"PLATFORM SECURE | TRAIN: {train_state.value}"
 
-        b_color = (0, 0, 255) if buzzer_on else (100, 100, 100)
-        e_color = (0, 0, 255) if ets_on else (100, 100, 100)
-        cv2.circle(annotated, (w - 140, 48), 6, b_color, -1)
-        cv2.putText(annotated, "BUZZER", (w - 128, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-        cv2.circle(annotated, (w - 60, 48), 6, e_color, -1)
-        cv2.putText(annotated, "ETS", (w - 48, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+            cv2.rectangle(annotated, (0, 0), (w, banner_h), banner_color, -1)
+            cv2.putText(annotated, status_text, (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
 
-        # Time & FPS
-        cv2.putText(annotated, f"TIME: {timestamp:.2f}s | CAM: {cfg['system']['camera_id']}",
-                    (15, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 220, 220), 1)
+            # Live Latency, FPS, and Source Telemetry counter
+            src_label = frame_source.source_name
+            if len(src_label) > 40:
+                src_label = src_label[:37] + "..."
+            stats_line = f"FPS: {avg_fps:.1f} | LATENCY: {avg_lat_ms:.1f} ms | SRC: {src_label}"
+            cv2.putText(annotated, stats_line, (15, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 1)
 
-        writer.write(annotated)
-        frame_idx += 1
+            # Hardware Indicators (Buzzer & ETS)
+            buzzer_on = escalation.buzzer.is_active(escalation.platform_id)
+            ets_on = escalation.trip_switch.is_tripped()
 
-    cap.release()
-    writer.release()
+            b_color = (0, 0, 255) if buzzer_on else (80, 80, 80)
+            e_color = (0, 0, 255) if ets_on else (80, 80, 80)
+            cv2.circle(annotated, (w - 180, 40), 8, b_color, -1)
+            cv2.putText(annotated, "BUZZER", (w - 165, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+            cv2.circle(annotated, (w - 75, 40), 8, e_color, -1)
+            cv2.putText(annotated, "ETS", (w - 60, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+
+            # Write frame if recording
+            if writer:
+                writer.write(annotated)
+
+            # Display window
+            if show_window:
+                cv2.imshow(window_name, annotated)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    print("[Pipeline] User requested exit.")
+                    break
+
+            frame_idx += 1
+            if max_frames and frame_idx >= max_frames:
+                break
+
+    finally:
+        frame_source.release()
+        if writer:
+            writer.release()
+        if show_window:
+            cv2.destroyAllWindows()
 
     # Save Event Log
     out_log_path = Path(output_log)
     out_log_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_log_path, "w", encoding="utf-8") as f:
         json.dump({
-            "video_source": str(video_path),
+            "source": frame_source.source_name,
             "frames_processed": frame_idx,
             "total_events": len(events_logged),
             "events": events_logged
         }, f, indent=2)
 
-    print(f"Finished pipeline. Output video: {out_v_path}, Log: {out_log_path}")
+    print(f"[Pipeline] Finished. Frames processed: {frame_idx}. Events logged to: {out_log_path}")
+    if output_video:
+        print(f"[Pipeline] Video written to: {output_video}")
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="AI Metro Platform Safety System CLI")
-    parser.add_argument("--video", type=str, default="demo_clips/demo_fall.mp4", help="Video path or alias (fall/jump/distress)")
-    parser.add_argument("--out-video", type=str, default="demo_output.mp4", help="Annotated video output path")
-    parser.add_argument("--out-log", type=str, default="demo_events.json", help="JSON events output path")
-    parser.add_argument("--train-state", type=str, default="ABSENT", help="Train state: ABSENT, APPROACHING, PRESENT")
-    parser.add_argument("--config", type=str, default=None, help="Config YAML path")
+    parser = argparse.ArgumentParser(description="AI Metro Platform Safety System Live Stream & File Pipeline")
+    parser.add_argument("--source", type=str, default=None,
+                        help="Video source: Phone stream URL (http://192.168.1.32:8080/video), webcam index (0), video file path, or alias (fall/jump/distress)")
+    parser.add_argument("--video", type=str, default=None,
+                        help="Legacy alias for --source")
+    parser.add_argument("--out-video", type=str, default=None,
+                        help="Optional output annotated video path")
+    parser.add_argument("--out-log", type=str, default="demo_events.json",
+                        help="JSON events audit log output path")
+    parser.add_argument("--train-state", type=str, default="ABSENT",
+                        help="Train state: ABSENT, APPROACHING, PRESENT")
+    parser.add_argument("--config", type=str, default=None,
+                        help="Config YAML path")
+    parser.add_argument("--no-window", action="store_true",
+                        help="Headless mode (disable live GUI window)")
+    parser.add_argument("--max-frames", type=int, default=None,
+                        help="Exit after processing N frames")
+    parser.add_argument("--loop", action="store_true",
+                        help="Loop pre-recorded video file continuously")
+    parser.add_argument("--fallback-video", type=str, default="demo_clips/demo_fall.mp4",
+                        help="Pre-recorded fallback video if live stream is unavailable")
     args = parser.parse_args()
 
-    run_pipeline(args.video, args.out_video, args.out_log, args.train_state, args.config)
+    chosen_source = args.source if args.source is not None else args.video
+
+    run_pipeline(
+        source_uri=chosen_source,
+        output_video=args.out_video,
+        output_log=args.out_log,
+        train_state_val=args.train_state,
+        config_path=args.config,
+        show_window=not args.no_window,
+        max_frames=args.max_frames,
+        fallback_video=args.fallback_video,
+        loop_video=args.loop
+    )

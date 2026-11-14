@@ -27,3 +27,4 @@ def apply_synthetic_occlusion(frame: np.ndarray, num_blocks: int = 2) -> np.ndar
         # Draw dark pillar/obstacle
         cv2.rectangle(res, (bx, by), (bx + bw, by + bh), (30, 30, 30), -1)
     return res
+

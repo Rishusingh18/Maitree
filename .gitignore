@@ -11,3 +11,7 @@ runs/
 *.avi
 data/cache/
 yolov8*.pt
+*.dll
+demo_events.json
+test_phone_stream.mp4
+

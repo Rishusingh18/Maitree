@@ -148,3 +148,4 @@ class SimulatedEmergencyTripSwitch(BaseEmergencyTripSwitch):
 
     def is_tripped(self) -> bool:
         return self.tripped
+

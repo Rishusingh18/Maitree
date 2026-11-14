@@ -4,6 +4,7 @@ system:
   station_id: "DMRC_STN_042"
   platform_id: "PL_DOWN_01"
   camera_id: "CCTV_CAM_03"
+  source: "http://192.168.1.32:8080/video"  # Video file, webcam index (0), or network stream (HTTP MJPEG/RTSP)
   fps_target: 25.0
   frame_skip: 1          # 1 = process every frame, 2 = process every other frame
   input_resolution: [640, 480]  # [width, height]
@@ -71,3 +72,4 @@ escalation:
   ets_confirmation_timeout_sec: 5.0
   webhook_url: "http://127.0.0.1:5000/api/alert"
   alert_log_file: "logs/safety_audit.log"
+

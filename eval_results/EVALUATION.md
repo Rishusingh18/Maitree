@@ -4,8 +4,8 @@
 - **DMRC Baseline Specification**: > 90% Detection Accuracy for track intrusion & safety line crossing.
 - **Rule-Based State Machine Accuracy**: **94.40%** (Target Met: **YES**)
 - **Learned Temporal Classifier (GBDT) Accuracy**: **100.00%** (Target Met: **YES**)
-- **Mean Pipeline Processing Speed**: **451.0 FPS** on CPU (Near real-time capable).
-- **Mean End-to-End Decision Latency**: **0.29 ms** (95th percentile: **0.72 ms**).
+- **Mean Pipeline Processing Speed**: **481.3 FPS** on CPU (Near real-time capable).
+- **Mean End-to-End Decision Latency**: **0.24 ms** (95th percentile: **0.79 ms**).
 - **False Alert Rate on Normal CCTV Footage**: **0.00 false alerts/hour**.
 
 ---

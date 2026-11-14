@@ -26,3 +26,4 @@ def generate_demo_clips(output_dir: Path | str = "demo_clips"):
 
 if __name__ == "__main__":
     generate_demo_clips()
+

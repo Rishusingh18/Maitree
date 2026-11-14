@@ -9,3 +9,4 @@
 - **Mitigation**: Implemented dual-mode distress gesture detection:
   1. Micro-pose: Open palm to folded thumb "Signal for Help" when bounding box resolution is high.
   2. Macro-pose: Both wrists crossed overhead ($Y_{wrist} < Y_{nose}$, $|X_{wrist1} - X_{wrist2}| < \tau$) as the standardized robust long-range fallback. Both are logged and reported in metadata.
+

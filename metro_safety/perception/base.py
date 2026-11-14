@@ -85,3 +85,4 @@ class BasePoseDetector(ABC):
     def detect(self, frame: np.ndarray) -> List[Detection]:
         """Run pose detection on a single frame."""
         pass
+

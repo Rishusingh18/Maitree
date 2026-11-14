@@ -49,3 +49,4 @@ $env:PYTHONPATH="."; .\.venv\Scripts\pytest.exe tests -v
 ```
 
 All 12 requirements from the original project specification are fully fulfilled, validated, and checked into version control.
+

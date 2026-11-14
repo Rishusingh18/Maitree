@@ -102,3 +102,4 @@ class VisionTrainStateProvider(BaseTrainStateProvider):
         from collections import Counter
         counts = Counter(self.state_history)
         return counts.most_common(1)[0][0]
+

@@ -149,3 +149,4 @@ class EscalationEngine:
             del self.active_intrusions[track_id]
         if not self.active_intrusions:
             self.buzzer.deactivate(self.platform_id)
+

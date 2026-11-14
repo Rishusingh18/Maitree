@@ -35,3 +35,4 @@ This document logs all engineering assumptions made during the design, developme
   - `DISTRESS`: Silent alert directly to Control Room/station security (no audible buzzer to protect the victim).
 - **ETS Safety Interlock**: An ETS action requires explicit human confirmation within a configurable timeout window (default 5 seconds) before autonomous hard-trip, unless configured in full-auto mode.
 - **Privacy**: No facial recognition, facial landmarking, biometric profiling, or persistent cross-session tracking. Track IDs are ephemeral integer tokens reset per video session.
+
