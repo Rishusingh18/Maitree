@@ -71,6 +71,7 @@ class LiveHub:
         self._explicit_train_state: bool = False
         self.ets_status: str = "DISENGAGED"  # DISENGAGED | ARMED | ENGAGED
         self._explicit_ets_status: bool = False
+        self.signal_held: bool = False
         self.cctv_status: str = "OPERATIONAL"
 
         # Control States
@@ -537,6 +538,27 @@ class LiveHub:
             "session_id": self.session_id
         })
         return {"status": "ok", "ets_status": "ENGAGED"}
+
+    def hold_signal(self) -> Dict[str, Any]:
+        """Operator engaged Guideway Signal Hold: holds approaching train signal to RED."""
+        with self._lock:
+            self.signal_held = True
+            logger.warning("[INTERLOCK] Guideway approaching signal held to RED at Patel Chowk.")
+
+        self.push_event({
+            "id": f"SIG-{int(time.time()*1000)}",
+            "timestamp": time.time(),
+            "time_str": time.strftime("%H:%M:%S", time.localtime()),
+            "track_id": 0,
+            "event_type": "SIGNAL_HELD_RED",
+            "zone": "guideway",
+            "severity": "L2",
+            "confidence": 0.99,
+            "action": "Interlock Engaged: Approaching train signal held to RED at Patel Chowk.",
+            "is_demo": False,
+            "session_id": self.session_id
+        })
+        return {"status": "ok", "signal_held": True, "message": "Approaching train signal held to RED."}
 
     def reset_ets(self) -> Dict[str, Any]:
         with self._lock:

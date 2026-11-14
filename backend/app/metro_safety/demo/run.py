@@ -69,8 +69,11 @@ def run_pipeline(
             "distress": "demo_clips/demo_distress.mp4",
             "synthetic": "demo_clips/demo_fall.mp4"
         }
-        mapped = alias_map.get(video_source.lower(), "demo_clips/demo_fall.mp4")
-        video_path = Path(mapped)
+        source_key = str(video_source).lower()
+        if source_key in alias_map:
+            video_path = Path(alias_map[source_key])
+        else:
+            raise FileNotFoundError(f"Requested video source not found and is not a recognized alias: {video_source}")
 
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -132,15 +135,50 @@ def run_pipeline(
                 x1, y1 = np.min(pts_arr[:, 0]) - 15, np.min(pts_arr[:, 1]) - 20
                 x2, y2 = np.max(pts_arr[:, 0]) + 15, np.max(pts_arr[:, 1]) + 15
                 box = np.array([x1, y1, x2, y2], dtype=np.float32)
-                # Fit 17 keypoints
+                # Fit 17 keypoints with anatomically preserved joint identity
                 kpts = np.zeros((17, 3), dtype=np.float32)
-                for ki in range(17):
-                    kpts[ki] = [np.mean(pts_arr[:, 0]), np.mean(pts_arr[:, 1]), 0.8]
-                if len(pts) >= 15:
-                    sorted_by_y = pts_arr[np.argsort(pts_arr[:, 1])]
-                    kpts[0] = sorted_by_y[0]   # nose (top)
-                    kpts[15] = sorted_by_y[-2] # ankle
-                    kpts[16] = sorted_by_y[-1] # ankle
+                sorted_by_y = pts_arr[np.argsort(pts_arr[:, 1])]
+                cx = float(np.mean(pts_arr[:, 0]))
+                cy = float(np.mean(pts_arr[:, 1]))
+                top_y = float(sorted_by_y[0][1])
+                bottom_y = float(sorted_by_y[-1][1])
+                h_est = max(bottom_y - top_y, 30.0)
+
+                kpts[0] = [cx, top_y + 0.08 * h_est, 0.95]        # nose
+                kpts[1] = [cx - 4, top_y + 0.06 * h_est, 0.9]      # L eye
+                kpts[2] = [cx + 4, top_y + 0.06 * h_est, 0.9]      # R eye
+                kpts[3] = [cx - 8, top_y + 0.08 * h_est, 0.85]     # L ear
+                kpts[4] = [cx + 8, top_y + 0.08 * h_est, 0.85]     # R ear
+                sh_y = top_y + 0.22 * h_est
+                kpts[5] = [cx - 14, sh_y, 0.92]                    # L shoulder
+                kpts[6] = [cx + 14, sh_y, 0.92]                    # R shoulder
+                hip_y = top_y + 0.52 * h_est
+                kpts[11] = [cx - 10, hip_y, 0.9]                   # L hip
+                kpts[12] = [cx + 10, hip_y, 0.9]                   # R hip
+                knee_y = top_y + 0.75 * h_est
+                kpts[13] = [cx - 8, knee_y, 0.9]                   # L knee
+                kpts[14] = [cx + 8, knee_y, 0.9]                   # R knee
+                kpts[15] = [cx - 8, bottom_y, 0.9]                 # L ankle
+                kpts[16] = [cx + 8, bottom_y, 0.9]                 # R ankle
+
+                # Wrists / elbows: detect raised hands (points above shoulder/nose)
+                raised_pts = [p for p in sorted_by_y if p[1] < sh_y]
+                if len(raised_pts) >= 2:
+                    kpts[7] = [cx - 15, (sh_y + top_y) / 2, 0.9]   # L elbow
+                    kpts[8] = [cx + 15, (sh_y + top_y) / 2, 0.9]   # R elbow
+                    kpts[9] = [raised_pts[0][0], raised_pts[0][1], 0.95]  # L wrist
+                    kpts[10] = [raised_pts[1][0], raised_pts[1][1], 0.95] # R wrist
+                elif len(raised_pts) == 1:
+                    kpts[7] = [cx - 15, (sh_y + top_y) / 2, 0.9]
+                    kpts[8] = [cx + 14, (sh_y + hip_y) / 2, 0.9]
+                    kpts[9] = [raised_pts[0][0], raised_pts[0][1], 0.95]
+                    kpts[10] = [cx + 14, hip_y + 5, 0.9]
+                else:
+                    kpts[7] = [cx - 14, (sh_y + hip_y) / 2, 0.9]
+                    kpts[8] = [cx + 14, (sh_y + hip_y) / 2, 0.9]
+                    kpts[9] = [cx - 14, hip_y + 5, 0.9]
+                    kpts[10] = [cx + 14, hip_y + 5, 0.9]
+
                 detections = [Detection(box=box, confidence=0.92, keypoints=kpts)]
 
         # 2. Tracking
@@ -151,11 +189,26 @@ def run_pipeline(
         gest_evs = gesture_det.process_frame(frame_idx, timestamp, tracked_dets, zm, train_state)
         all_evs = rule_evs + gest_evs
 
-        # 4. Escalation
+        # Per-frame escalation lifecycle: clear confirmed resolved tracks (present in safe platform with no active hazards)
+        active_hazard_tracks = {ev.track_id for ev in all_evs if hasattr(ev, 'track_id')}
+        for det in tracked_dets:
+            if det.track_id is not None and det.track_id not in active_hazard_tracks:
+                if zm.get_zone_for_point(det.foot_anchor) == "platform":
+                    escalation.clear_track(det.track_id)
+
+        # 4. Escalation: Select displayed decision by explicit severity priority (L3 > L2 > L1 > DISTRESS > NORMAL)
+        SEVERITY_PRIORITY = {
+            SeverityLevel.L3: 4,
+            SeverityLevel.L2: 3,
+            SeverityLevel.L1: 2,
+            SeverityLevel.DISTRESS: 1,
+            SeverityLevel.NORMAL: 0
+        }
         current_decision = None
         for ev in all_evs:
             dec = escalation.evaluate(ev, current_time=timestamp)
-            current_decision = dec
+            if current_decision is None or SEVERITY_PRIORITY.get(dec.severity, 0) > SEVERITY_PRIORITY.get(current_decision.severity, 0):
+                current_decision = dec
             events_logged.append({
                 "frame": frame_idx,
                 "timestamp": round(timestamp, 3),

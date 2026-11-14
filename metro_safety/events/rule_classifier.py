@@ -101,16 +101,16 @@ class TrackStateMachine:
         if len(self.observations) > 45:
             self.observations.pop(0)
 
-        # Update zone hysteresis counters
+        # Update zone hysteresis counters - reset when zone is exited to bound hysteresis
         if zone == "yellow_band":
             self.yellow_consecutive += 1
         else:
-            self.yellow_consecutive = max(0, self.yellow_consecutive - 1)
+            self.yellow_consecutive = 0
 
         if zone in ["track_bed", "danger_zone"]:
             self.track_consecutive += 1
         else:
-            self.track_consecutive = max(0, self.track_consecutive - 1)
+            self.track_consecutive = 0
 
         # Evaluate Fall vs Jump vs Intrusion vs Crossing
         detected_event = self._classify_kinematics(train_state)
@@ -328,10 +328,13 @@ class RuleBasedEventClassifier:
             if ev:
                 events.append(ev)
 
-        # Prune inactive tracks
+        # Prune inactive tracks after a bounded recovery interval (30 frames / ~1 second)
+        max_recovery_frames = 30
         for dead_id in list(self.track_machines.keys()):
             if dead_id not in active_ids:
-                if len(self.track_machines[dead_id].observations) == 0:
+                obs_list = self.track_machines[dead_id].observations
+                last_f = obs_list[-1].frame_idx if obs_list else 0
+                if not obs_list or (frame_idx - last_f) > max_recovery_frames:
                     del self.track_machines[dead_id]
 
         return events

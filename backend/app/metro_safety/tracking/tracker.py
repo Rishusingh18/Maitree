@@ -27,9 +27,12 @@ class STrack:
     """Single object track state representation."""
     _count = 0
 
-    def __init__(self, detection: Detection):
-        STrack._count += 1
-        self.track_id = STrack._count
+    def __init__(self, detection: Detection, track_id: Optional[int] = None):
+        if track_id is not None:
+            self.track_id = track_id
+        else:
+            STrack._count += 1
+            self.track_id = STrack._count
         self.box = detection.box.copy()
         self.confidence = detection.confidence
         self.keypoints = detection.keypoints.copy() if detection.keypoints is not None else None
@@ -38,6 +41,8 @@ class STrack:
         self.history: List[Detection] = [detection]
         self.vx = 0.0
         self.vy = 0.0
+        self.last_cx = (detection.box[0] + detection.box[2]) / 2.0
+        self.last_cy = (detection.box[1] + detection.box[3]) / 2.0
 
     @classmethod
     def reset_counter(cls):
@@ -53,14 +58,17 @@ class STrack:
 
     def update(self, detection: Detection):
         """Update track with matched detection."""
-        # Update velocities
+        # Compute velocity from successive measured positions normalized by elapsed frames
         curr_cx = (detection.box[0] + detection.box[2]) / 2.0
         curr_cy = (detection.box[1] + detection.box[3]) / 2.0
-        prev_cx = (self.box[0] + self.box[2]) / 2.0
-        prev_cy = (self.box[1] + self.box[3]) / 2.0
+        dt = max(1, self.time_since_update)
+        measured_vx = (curr_cx - self.last_cx) / float(dt)
+        measured_vy = (curr_cy - self.last_cy) / float(dt)
 
-        self.vx = 0.6 * self.vx + 0.4 * (curr_cx - prev_cx)
-        self.vy = 0.6 * self.vy + 0.4 * (curr_cy - prev_cy)
+        self.vx = 0.6 * self.vx + 0.4 * measured_vx
+        self.vy = 0.6 * self.vy + 0.4 * measured_vy
+        self.last_cx = curr_cx
+        self.last_cy = curr_cy
 
         self.box = detection.box.copy()
         self.confidence = detection.confidence
@@ -90,11 +98,16 @@ class ByteTracker:
         self.match_thresh = match_thresh
         self.tracked_tracks: List[STrack] = []
         self.lost_tracks: List[STrack] = []
+        self._track_id_counter = 0
+
+    def _next_id(self) -> int:
+        self._track_id_counter += 1
+        return self._track_id_counter
 
     def reset(self):
         self.tracked_tracks = []
         self.lost_tracks = []
-        STrack.reset_counter()
+        self._track_id_counter = 0
 
     def update(self, detections: List[Detection]) -> List[Detection]:
         """Update tracker with frame detections, assigning persistent track_ids."""
@@ -123,6 +136,10 @@ class ByteTracker:
 
         # Stage 3: Associate newly unmatched high-confidence detections with lost tracks
         unmatched_lost, remaining_dets = self._associate(self.lost_tracks, unmatched_dets, self.match_thresh)
+        for t in self.lost_tracks:
+            if t not in unmatched_lost and t.state == TrackState.Tracked:
+                self.tracked_tracks.append(t)
+
         for t in unmatched_lost:
             if t.time_since_update > self.track_buffer:
                 t.state = TrackState.Removed
@@ -132,7 +149,7 @@ class ByteTracker:
         # Initialize new tracks for remaining high confidence detections
         for det in remaining_dets:
             if det.confidence >= self.new_thresh:
-                new_t = STrack(det)
+                new_t = STrack(det, track_id=self._next_id())
                 new_t.state = TrackState.Tracked
                 det.track_id = new_t.track_id
                 self.tracked_tracks.append(new_t)

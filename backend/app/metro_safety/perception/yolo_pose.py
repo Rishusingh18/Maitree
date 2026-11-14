@@ -13,12 +13,14 @@ class YOLOPoseDetector(BasePoseDetector):
         model_name: str = "yolov8n-pose.pt",
         confidence_threshold: float = 0.35,
         iou_threshold: float = 0.45,
-        device: str = "cpu"
+        device: str = "cpu",
+        inference_size: int = 320
     ):
         self.model_name = model_name
         self.conf = confidence_threshold
         self.iou = iou_threshold
         self.device = device
+        self.inference_size = inference_size
         self._model = None
         self._load_model()
 
@@ -27,8 +29,7 @@ class YOLOPoseDetector(BasePoseDetector):
             from ultralytics import YOLO
             self._model = YOLO(self.model_name)
         except Exception as e:
-            print(f"[Warning] YOLO model load failed: {e}. Falling back to dummy mock detector.")
-            self._model = None
+            raise RuntimeError(f"YOLO model load failed for '{self.model_name}': {e}") from e
 
     def detect(self, frame: np.ndarray) -> List[Detection]:
         """Detect person bounding boxes and 17 keypoints."""
@@ -37,6 +38,7 @@ class YOLOPoseDetector(BasePoseDetector):
 
         results = self._model(
             frame,
+            imgsz=self.inference_size,
             conf=self.conf,
             iou=self.iou,
             device=self.device,

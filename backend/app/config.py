@@ -4,7 +4,11 @@ from typing import Optional
 try:
     from pydantic_settings import BaseSettings, SettingsConfigDict
     from pydantic import Field, field_validator
+    _has_pydantic_settings = True
+except (ImportError, ModuleNotFoundError):
+    _has_pydantic_settings = False
 
+if _has_pydantic_settings:
     class Settings(BaseSettings):
         model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -26,9 +30,8 @@ try:
             return v.lower() if v.lower() in allowed else "info"
 
     settings = Settings()
-
-except Exception:
-    # Graceful fallback to standard dataclass / os.getenv
+else:
+    # Graceful fallback to standard dataclass / os.getenv only when pydantic_settings is not installed
     class Settings:
         APP_NAME: str = os.getenv("APP_NAME", "MetroSafetyAPI")
         DEBUG: bool = os.getenv("DEBUG", "False").lower() in ("true", "1")

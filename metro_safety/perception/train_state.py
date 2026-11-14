@@ -46,8 +46,13 @@ class ScheduleFileTrainStateProvider(BaseTrainStateProvider):
             return
         with open(self.schedule_file, "r", encoding="utf-8") as f:
             data = json.load(f)
-            # data format: [{"approaching": [10.0, 20.0], "present": [20.0, 45.0]}, ...]
-            self.intervals = data.get("train_events", [])
+            # data format: [{"approaching": [10.0, 20.0], "present": [20.0, 45.0]}, ...] or {"train_events": [...]}
+            if isinstance(data, list):
+                self.intervals = data
+            elif isinstance(data, dict):
+                self.intervals = data.get("train_events", [])
+            else:
+                self.intervals = []
 
     def get_state(self, timestamp: Optional[float] = None, frame: Optional[np.ndarray] = None) -> TrainState:
         t = timestamp if timestamp is not None else time.time()
@@ -82,8 +87,11 @@ class VisionTrainStateProvider(BaseTrainStateProvider):
         cv2.fillPoly(mask, [self.track_polygon], 255)
         track_area = max(1.0, float(np.sum(mask > 0)))
 
-        # Background subtraction
-        fg_mask = self.bg_subtractor.apply(gray)
+        # Background subtraction: freeze background model update if train is present
+        # to prevent stationary stopped train from being absorbed into background
+        is_stationary_present = bool(self.state_history and self.state_history[-1] == TrainState.PRESENT)
+        lr = 0.0 if is_stationary_present else -1
+        fg_mask = self.bg_subtractor.apply(gray, learningRate=lr)
         fg_track = cv2.bitwise_and(fg_mask, fg_mask, mask=mask)
         motion_ratio = float(np.sum(fg_track > 0)) / track_area
 

@@ -85,10 +85,12 @@ class TrackGestureStateMachine:
                 wrists_crossed = True
 
         # --- 2. Micro Gesture: Signal for Help (Raised Hand sequence) ---
-        # Hand raised above shoulder height, steady position (not waving left-right)
-        hand_raised = False
-        if (w_r[2] > 0.4 and w_r[1] < sh_y - 15) or (w_l[2] > 0.4 and w_l[1] < sh_y - 15):
-            hand_raised = True
+        # Note: 17-point body pose keypoints cannot observe individual thumb-tuck / finger-fold
+        # sequences required for Signal for Help. To avoid false positives from simple raised hands,
+        # stage is set to 0 unless full hand keypoints can confirm the sequence.
+        r_raised = (w_r[2] > 0.4 and w_r[1] < sh_y - 15)
+        l_raised = (w_l[2] > 0.4 and w_l[1] < sh_y - 15)
+        hand_raised = r_raised or l_raised
 
         obs = GestureObservation(
             frame_idx=frame_idx,
@@ -98,7 +100,7 @@ class TrackGestureStateMachine:
             nose=nose,
             sh_l=sh_l,
             sh_r=sh_r,
-            signal_for_help_stage=2 if hand_raised else 0,
+            signal_for_help_stage=0,  # Disabled for 17-point body pose without finger keypoints
             wrists_crossed=wrists_crossed
         )
         self.history.append(obs)
@@ -106,14 +108,24 @@ class TrackGestureStateMachine:
             self.history.pop(0)
 
         # Anti-False-Positive: Waving Rejection
-        # Normal waving has high horizontal velocity oscillations of wrist
-        wrist_xs = [o.wrist_r[0] for o in self.history if o.wrist_r[2] > 0.3]
+        # Track horizontal motion for the specific hand supplying gesture evidence
         is_waving = False
-        if len(wrist_xs) >= 8:
-            x_diffs = np.diff(wrist_xs)
-            sign_changes = np.sum(np.diff(np.sign(x_diffs)) != 0)
-            if sign_changes >= 4 and np.max(wrist_xs) - np.min(wrist_xs) > 25.0:
-                is_waving = True  # Reject waving / hailing
+        def _check_wrist_waving(wrist_selector):
+            xs = [wrist_selector(o)[0] for o in self.history if wrist_selector(o)[2] > 0.3]
+            if len(xs) >= 8:
+                x_diffs = np.diff(xs)
+                sign_changes = np.sum(np.diff(np.sign(x_diffs)) != 0)
+                if sign_changes >= 4 and (np.max(xs) - np.min(xs)) > 25.0:
+                    return True
+            return False
+
+        if r_raised and _check_wrist_waving(lambda o: o.wrist_r):
+            is_waving = True
+        if l_raised and _check_wrist_waving(lambda o: o.wrist_l):
+            is_waving = True
+        if wrists_crossed:
+            if _check_wrist_waving(lambda o: o.wrist_r) or _check_wrist_waving(lambda o: o.wrist_l):
+                is_waving = True
 
         # Persistence counters
         if wrists_crossed and not is_waving:
@@ -121,7 +133,9 @@ class TrackGestureStateMachine:
         else:
             self.crossed_persist_count = max(0, self.crossed_persist_count - 1)
 
-        if hand_raised and not is_waving:
+        # Raised hand requires at least 8 observations to run waving-rejection check
+        has_min_obs_for_waving = len(self.history) >= 8
+        if hand_raised and not is_waving and has_min_obs_for_waving:
             self.signal_persist_count += 1
         else:
             self.signal_persist_count = max(0, self.signal_persist_count - 1)

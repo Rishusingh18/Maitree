@@ -204,18 +204,29 @@ class ScenarioGenerator:
                 kpts[9] = [sh_center_x - 14, sh_center_y + 32 + arm_swing, 0.90]
                 kpts[10] = [sh_center_x + 14, sh_center_y + 32 - arm_swing, 0.90]
 
-            # Bounding box containing keypoints + padding
-            min_x = max(0.0, float(np.min(kpts[:, 0]) - 8.0))
-            max_x = min(float(self.w), float(np.max(kpts[:, 0]) + 8.0))
-            min_y = max(0.0, float(np.min(kpts[:, 1]) - 10.0))
-            max_y = min(float(self.h), float(np.max(kpts[:, 1]) + 5.0))
-            box = np.array([min_x, min_y, max_x, max_y], dtype=np.float32)
+            # Bounding box containing keypoints + padding (guaranteeing min_x <= max_x)
+            raw_min_x = float(np.min(kpts[:, 0]) - 8.0)
+            raw_max_x = float(np.max(kpts[:, 0]) + 8.0)
+            raw_min_y = float(np.min(kpts[:, 1]) - 10.0)
+            raw_max_y = float(np.max(kpts[:, 1]) + 5.0)
+
+            if raw_max_x <= 0 or raw_min_x >= self.w or raw_max_y <= 0 or raw_min_y >= self.h:
+                # Fully out of frame person represented as absent
+                box = np.zeros(4, dtype=np.float32)
+                conf = 0.0
+            else:
+                min_x = max(0.0, min(float(self.w), raw_min_x))
+                max_x = max(min_x, min(float(self.w), raw_max_x))
+                min_y = max(0.0, min(float(self.h), raw_min_y))
+                max_y = max(min_y, min(float(self.h), raw_max_y))
+                box = np.array([min_x, min_y, max_x, max_y], dtype=np.float32)
+                conf = 0.88
 
             frames_data.append({
                 "frame_idx": f,
                 "box": box,
                 "keypoints": kpts,
-                "confidence": 0.88,
+                "confidence": conf,
                 "ground_truth_event": scenario,
                 "torso_tilt": torso_tilt
             })

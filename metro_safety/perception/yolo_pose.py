@@ -29,8 +29,7 @@ class YOLOPoseDetector(BasePoseDetector):
             from ultralytics import YOLO
             self._model = YOLO(self.model_name)
         except Exception as e:
-            print(f"[Warning] YOLO model load failed: {e}. Falling back to dummy mock detector.")
-            self._model = None
+            raise RuntimeError(f"YOLO model load failed for '{self.model_name}': {e}") from e
 
     def detect(self, frame: np.ndarray) -> List[Detection]:
         """Detect person bounding boxes and 17 keypoints."""

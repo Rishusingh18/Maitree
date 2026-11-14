@@ -1150,7 +1150,7 @@
           </div>
 
           <div class="aspect-video bg-black rounded-md relative overflow-hidden border border-[var(--border)]">
-            <img src="/video_feed" alt="Incident Feed" class="w-full h-full object-cover" onerror="if(!this.src.includes('assets/')){this.src='assets/cam101_rajiv_chowk.jpg';}">
+            <img src="/video_feed" alt="Incident Feed" class="w-full h-full object-cover" onerror="handleStreamError(this, 'assets/cam101_rajiv_chowk.jpg')">
             <div class="absolute top-2 left-2 bg-black/70 backdrop-blur-xs px-2 py-0.5 rounded text-[11px] text-white flex items-center space-x-2">
               <span id="cam101-live-status" class="text-amber-400">● Connecting...</span>
               <span>| CAM-101</span>
@@ -3271,11 +3271,40 @@
       return 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300';
     }
 
-    // Telemetry polling — 1 second interval
+    // Live feed stream recovery handler
+    function handleStreamError(imgEl, fallbackSrc) {
+      if (imgEl._reconnectTimer) return;
+      imgEl.src = fallbackSrc;
+      imgEl._usingFallback = true;
+      const statusEl = document.getElementById('cam101-live-status');
+      if (statusEl) {
+        statusEl.textContent = '● Stream Reconnecting...';
+        statusEl.className = 'text-amber-400';
+      }
+      imgEl._reconnectTimer = setInterval(() => {
+        const probe = new Image();
+        probe.onload = () => {
+          clearInterval(imgEl._reconnectTimer);
+          imgEl._reconnectTimer = null;
+          imgEl._usingFallback = false;
+          imgEl.src = '/video_feed?t=' + Date.now();
+        };
+        probe.src = '/video_feed?probe=' + Date.now();
+      }, 4000);
+    }
+
+    // Telemetry polling with generational order protection
+    let _telemetryReqGen = 0;
     function pollTelemetry() {
+      const curGen = ++_telemetryReqGen;
       fetch('/api/telemetry')
-        .then(r => r.json())
+        .then(r => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json();
+        })
         .then(data => {
+          if (curGen !== _telemetryReqGen) return; // Discard stale response
+
           // Update live banner in sidebar / header if elements exist
           const fpsEls = document.querySelectorAll('.live-fps-display');
           fpsEls.forEach(el => { el.textContent = (data.live_fps || 0).toFixed(1) + ' FPS'; });
@@ -3297,11 +3326,14 @@
 
           // Update CAM-101 status chip (live / fallback)
           const cam101status = document.getElementById('cam101-live-status');
+          const cam101img = document.querySelector('img[src*="/video_feed"]');
+          const isCurrentlyFallback = cam101img && cam101img._usingFallback;
+
           if (cam101status) {
-            if (data.is_online && !data.is_fallback) {
+            if (!isCurrentlyFallback && data.is_online && !data.is_fallback) {
               cam101status.textContent = '● Live Camera';
               cam101status.className = 'text-emerald-400';
-            } else if (data.is_fallback) {
+            } else if (data.is_fallback || isCurrentlyFallback) {
               cam101status.textContent = '● Demo Clip (Fallback)';
               cam101status.className = 'text-amber-400';
             } else {
@@ -3319,19 +3351,35 @@
             const line = document.createElement('div');
             line.textContent = `[${ts}] CCTV:${online}${fallback} | FPS:${(data.live_fps||0).toFixed(1)} | Lat:${(data.live_latency_ms||0).toFixed(0)}ms | Train:${data.train_state||'?'} | ETS:${data.ets_status||'?'}`;
             termLog.prepend(line);
-            // Keep at most 50 lines
             while (termLog.children.length > 50) termLog.removeChild(termLog.lastChild);
           }
         })
-        .catch(() => {}); // Silent failure — backend not yet up
+        .catch(() => {
+          if (curGen !== _telemetryReqGen) return;
+          // Mark live connection unavailable or stale
+          const cam101status = document.getElementById('cam101-live-status');
+          if (cam101status) {
+            cam101status.textContent = '● Offline / Stale';
+            cam101status.className = 'text-red-400';
+          }
+          const fpsEls = document.querySelectorAll('.live-fps-display');
+          fpsEls.forEach(el => { el.textContent = '0.0 FPS (Offline)'; });
+        });
     }
 
-    // Events polling — 2 second interval
+    // Events polling with generational order protection
+    let _eventsReqGen = 0;
     let _lastEventIds = new Set();
     function pollEvents() {
+      const curGen = ++_eventsReqGen;
       fetch('/api/events?limit=50')
-        .then(r => r.json())
+        .then(r => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json();
+        })
         .then(data => {
+          if (curGen !== _eventsReqGen) return; // Discard stale response
+
           const events = data.events || [];
           if (!events.length) return;
 
@@ -3401,48 +3449,62 @@
         .catch(() => {});
     }
 
-    // Wire operator control buttons to backend /api/control
+    // Wire operator control buttons to backend /api/control (returns completion promise)
     function sendControl(action, value) {
       const payload = { action };
       if (value !== undefined) payload.value = value;
-      fetch('/api/control', {
+      return fetch('/api/control', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       })
-        .then(r => r.json())
+        .then(r => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json();
+        })
         .then(res => {
           if (res.status === 'ok') {
             acknowledgeAlert(`✓ Control: ${action} → ${res.message || JSON.stringify(res)}`);
+            return res;
           } else {
             acknowledgeAlert(`✗ Control failed: ${res.message || 'Unknown error'}`);
+            throw new Error(res.message || 'Control failed');
           }
         })
-        .catch(err => acknowledgeAlert(`✗ Control error: ${err}`));
+        .catch(err => {
+          acknowledgeAlert(`✗ Control error: ${err.message || err}`);
+          throw err;
+        });
     }
 
-    // Override confirmTripSwitch to wire ETS to backend
+    // Override confirmTripSwitch to wire ETS to backend and update checklist ONLY when successful
     const _origConfirmTripSwitch = confirmTripSwitch;
     window.confirmTripSwitch = function() {
       openConfirmModal(
         'Third Rail Traction Cutoff',
         'Are you sure you want to de-energize the 750V DC traction power supply for Rajiv Chowk Platform 2?',
         () => {
-          sendControl('ets_trip');
-          const chk = document.getElementById('chk-ets');
-          if (chk) chk.checked = true;
+          sendControl('ets_trip')
+            .then(() => {
+              const chk = document.getElementById('chk-ets');
+              if (chk) chk.checked = true;
+            })
+            .catch(() => {
+              const chk = document.getElementById('chk-ets');
+              if (chk) chk.checked = false;
+            });
         }
       );
     };
 
-    // Override simulateInterlockAction to also call backend buzzer/alarm
+    // Override simulateInterlockAction to trigger backend buzzer and guideway signal hold
     const _origSimulateInterlockAction = simulateInterlockAction;
     window.simulateInterlockAction = function(actionType) {
       _origSimulateInterlockAction(actionType);
       if (actionType === 'PA_SAFETY_CHIME') {
         sendControl('test_beep', 'L1');
       } else if (actionType === 'SIGNAL_RED_HOLD') {
-        sendControl('set_train_state', 'APPROACHING');
+        sendControl('signal_hold');
       }
     };
 

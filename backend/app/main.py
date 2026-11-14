@@ -2,12 +2,12 @@ import os
 import time
 import logging
 from typing import Optional, Dict, Any
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response, Depends
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from .api.router import api_router
+from .api.router import api_router, get_api_key
 from .config import settings
 from metro_safety.demo.hub import get_global_hub
 
@@ -44,7 +44,6 @@ def health_check():
 def _mjpeg_generator():
     """Streams MJPEG frames from the ML LiveHub using correct hub API."""
     hub = get_global_hub()
-    # Use the hub's built-in mjpeg_generator which handles locking and fallback frames
     yield from hub.mjpeg_generator()
 
 @app.get("/video_feed", tags=["Live Stream"])
@@ -68,8 +67,8 @@ def get_events(limit: int = 50):
     return JSONResponse({"events": hub.get_events(limit=limit)})
 
 @app.post("/api/control", tags=["Operator Controls"])
-async def process_control(request: Request):
-    """Operator controls (Acknowledge buzzer, Mute, Test Beep, ETS trigger, Train state)."""
+async def process_control(request: Request, authorized: bool = Depends(get_api_key)):
+    """Operator controls (Acknowledge buzzer, Mute, Test Beep, ETS trigger, Signal hold, Train state)."""
     hub = get_global_hub()
     try:
         body = await request.json()
@@ -87,6 +86,8 @@ async def process_control(request: Request):
             res = hub.trip_ets()
         elif action == "ets_reset":
             res = hub.reset_ets()
+        elif action in ["signal_hold", "hold_signal"]:
+            res = hub.hold_signal()
         elif action == "set_train_state":
             if not value:
                 return JSONResponse({"status": "error", "message": "value required for set_train_state"}, status_code=400)

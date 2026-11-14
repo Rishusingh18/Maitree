@@ -199,11 +199,26 @@ def run_pipeline(
             gest_evs = gesture_det.process_frame(frame_idx, frame_ts, tracked_dets, zm, train_state)
             all_evs = rule_evs + gest_evs
 
-            # 4. Closed-Loop Escalation
+            # Per-frame escalation lifecycle: clear confirmed resolved tracks (present in safe platform with no active hazards)
+            active_hazard_tracks = {ev.track_id for ev in all_evs if hasattr(ev, 'track_id')}
+            for det in tracked_dets:
+                if det.track_id is not None and det.track_id not in active_hazard_tracks:
+                    if zm.get_zone_for_point(det.foot_anchor) == "platform":
+                        escalation.clear_track(det.track_id)
+
+            # 4. Closed-Loop Escalation: Select displayed decision by explicit severity priority (L3 > L2 > L1 > DISTRESS > NORMAL)
+            SEVERITY_PRIORITY = {
+                SeverityLevel.L3: 4,
+                SeverityLevel.L2: 3,
+                SeverityLevel.L1: 2,
+                SeverityLevel.DISTRESS: 1,
+                SeverityLevel.NORMAL: 0
+            }
             current_decision = None
-            for ev in all_evs:
+            for ev_idx, ev in enumerate(all_evs):
                 dec = escalation.evaluate(event=ev, train_state=train_state, current_time=frame_ts, snapshot=frame)
-                current_decision = dec
+                if current_decision is None or SEVERITY_PRIORITY.get(dec.severity, 0) > SEVERITY_PRIORITY.get(current_decision.severity, 0):
+                    current_decision = dec
                 ev_data = ev.to_dict() if hasattr(ev, 'to_dict') else {}
                 log_entry = {
                     "frame": frame_idx,
@@ -217,10 +232,10 @@ def run_pipeline(
                 }
                 events_logged.append(log_entry)
 
-                # Push to live hub for dashboard & SSE streaming
+                # Push to live hub for dashboard & SSE streaming (unique ID per event in frame)
                 try:
                     hub.push_event({
-                        "id": f"EV-{int(frame_ts * 1000)}-{frame_idx}",
+                        "id": f"EV-{int(frame_ts * 1000)}-{frame_idx}-{ev_idx}",
                         "timestamp": frame_ts,
                         "time_str": time.strftime("%H:%M:%S", time.localtime(frame_ts)),
                         "track_id": getattr(ev, "track_id", 0),

@@ -38,7 +38,7 @@ class ZoneManager:
         for name, zone in self.zones.items():
             if name not in self.CHECK_ORDER and zone.contains_point(point):
                 return name
-        return "platform"  # Default assumption for metro safety area
+        return "outside"
 
     def is_in_zone(self, point: Tuple[float, float], zone_name: str) -> bool:
         """Check if point is inside a specific zone."""

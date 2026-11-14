@@ -23,7 +23,7 @@ from backend.app.main import app as fastapi_app
 def run_vision_loop(stop_event: threading.Event, source_uri: str = None, config_path: str = None):
     """Runs the ML Computer Vision inference loop in a background thread."""
     cfg = load_config(config_path)
-    source = source_uri or cfg["system"].get("source", "http://192.168.1.70:8080/video")
+    source = source_uri or os.environ.get("METRO_SOURCE_OVERRIDE") or cfg["system"].get("source", "http://192.168.1.70:8080/video")
     print(f"[ML Pipeline] Initializing camera source: {source}")
 
     try:
@@ -70,10 +70,12 @@ def main():
     try:
         uvicorn.run(fastapi_app, host="0.0.0.0", port=args.port, log_level="warning")
     except KeyboardInterrupt:
-        print("\n[System] Shutting down...")
+        pass
     finally:
+        print("\n[System] Shutting down: signaling vision pipeline to stop...")
         stop_event.set()
-        ml_thread.join(timeout=2.0)
+        ml_thread.join()
+        print("[System] Vision pipeline cleanly terminated.")
 
 
 if __name__ == "__main__":
