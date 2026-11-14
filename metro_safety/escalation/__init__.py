@@ -1,4 +1,5 @@
 from metro_safety.escalation.engine import EscalationEngine, EscalationDecision
+from metro_safety.escalation.buzzer import HardwareBuzzer
 from metro_safety.escalation.adapters import (
     BasePlatformBuzzer,
     BaseControlRoomNotifier,
@@ -11,6 +12,7 @@ from metro_safety.escalation.adapters import (
 __all__ = [
     "EscalationEngine",
     "EscalationDecision",
+    "HardwareBuzzer",
     "BasePlatformBuzzer",
     "BaseControlRoomNotifier",
     "BaseEmergencyTripSwitch",
