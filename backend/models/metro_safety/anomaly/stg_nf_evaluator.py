@@ -70,7 +70,7 @@ class STGNFEvaluator:
             )
 
             incompatible = model.load_state_dict(ckpt["state_dict"], strict=False)
-            missing_params = [k for k in incompatible.missing_keys if not k.endswith(".A") and not k.endswith(".b")]
+            missing_params = [k for k in incompatible.missing_keys if not (k.endswith(".indices") or k.endswith(".indices_inverse"))]
             if missing_params:
                 raise RuntimeError(f"Missing parameter weights in checkpoint state dict: {missing_params[:4]}")
             model.set_actnorm_init()
@@ -188,21 +188,22 @@ class STGNFEvaluator:
         # Fallback heuristic scoring: measure torso flatness and keypoint jerkiness
         y_spans = []
         x_spans = []
+        valid_counts = []
         for p in sampled:
             valid = p[p[:, 2] > 0.1, :2] if p.shape[-1] >= 3 else p[(p[:, 0] > 0) | (p[:, 1] > 0)]
+            valid_counts.append(len(valid))
             if len(valid) >= 4:
                 x_spans.append(float(np.max(valid[:, 0]) - np.min(valid[:, 0])))
                 y_spans.append(float(np.max(valid[:, 1]) - np.min(valid[:, 1])))
-            else:
-                x_spans.append(float(np.max(p[:, 0]) - np.min(p[:, 0])))
-                y_spans.append(float(np.max(p[:, 1]) - np.min(p[:, 1])))
+
+        if not x_spans or (valid_counts and max(valid_counts) < 4):
+            return False, 0.0, 0.0
 
         avg_aspect = np.mean(x_spans) / max(1.0, float(np.mean(y_spans)))
 
         # Aspect ratio > 1.2 indicates horizontal body
         pseudo_nll = 15.0 if avg_aspect > 1.2 else 8.0
-        fallback_decision_thresh = min(self.anomaly_nll_thresh, 12.0)
-        is_anom = pseudo_nll > fallback_decision_thresh
+        is_anom = pseudo_nll > self.anomaly_nll_thresh
         conf = 0.85 if is_anom else 0.10
         return is_anom, pseudo_nll, conf
 

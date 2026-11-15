@@ -70,7 +70,7 @@ class FlowStep(nn.Module):
             flow_coupling,
             LU_decomposed,
             A=None,
-            temporal_kernel_size=4,
+            temporal_kernel_size=5,
             edge_importance_weighting=False,
             last=False,
             first=False,

@@ -54,8 +54,8 @@ class AnomalyEvaluator:
                 for row in reader:
                     clip = row.get("clip_path") or row.get("file") or row.get("path")
                     expected = row.get("event") or row.get("label") or row.get("expected")
-                    results.append({"clip": clip, "expected": expected, "status": "VERIFIED_MANIFEST_ENTRY"})
-            return {"manifest": manifest_csv, "entries_found": len(results), "items": results}
+                    results.append({"clip": clip, "expected": expected, "status": "UNTESTED_MANIFEST_ENTRY"})
+            return {"manifest": manifest_csv, "entries_found": len(results), "evaluated": False, "status": "MANIFEST_INSPECTED_NOT_EVALUATED", "items": results}
         except Exception as e:
             return {"error": f"Failed reading manifest: {e}"}
 

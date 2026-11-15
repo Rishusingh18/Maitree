@@ -28,7 +28,10 @@ from metro_safety.anomaly.person_down import PersonDownDetector
 from metro_safety.anomaly.loitering import LoiteringDetector
 from metro_safety.anomaly.abandoned_object import AbandonedObjectDetector, TrackedObject
 from metro_safety.anomaly.theft_snatch import TheftSnatchDetector
-from metro_safety.anomaly.stg_nf_evaluator import STGNFEvaluator
+try:
+    from metro_safety.anomaly.stg_nf_evaluator import STGNFEvaluator
+except (ImportError, Exception):
+    STGNFEvaluator = None
 
 logger = logging.getLogger("AnomalyEngine")
 
@@ -154,7 +157,9 @@ class AnomalyEngine:
                 tracked_dets=person_detections,
                 zone_manager=zone_manager,
                 train_state=train_state,
-                active_falls_map=active_falls_map
+                active_falls_map=active_falls_map,
+                camera_motion=camera_motion,
+                zones_unverified=zones_unverified
             )
             for ev in pd_events:
                 ev.camera_motion = camera_motion
@@ -191,7 +196,9 @@ class AnomalyEngine:
                 zone_manager=zone_manager,
                 train_state=train_state,
                 synthetic_objects=synthetic_objects,
-                alert_enabled=self.ao_enabled
+                alert_enabled=self.ao_enabled,
+                camera_motion=camera_motion,
+                zones_unverified=zones_unverified
             )
             if self.ao_enabled:
                 for ev in ao_events:
@@ -266,7 +273,11 @@ class AnomalyEngine:
             if "disclaimer" not in ev.metadata:
                 ev.metadata["disclaimer"] = "operator welfare review"
 
-            key = (str(ev.track_id), ev.event_type.value)
+            track_key = str(ev.metadata.get("object_id") if (ev.track_id is None or ev.track_id == 0) and "object_id" in ev.metadata else ev.track_id)
+            if "episode_id" in ev.metadata:
+                key = (track_key, ev.event_type.value, str(ev.metadata["episode_id"]))
+            else:
+                key = (track_key, ev.event_type.value)
             sev = ev.metadata.get("severity_cap", ev.metadata.get("severity_code", "L1"))
             is_low_trust = bool(camera_motion or zones_unverified or ev.metadata.get("low_trust", False))
             cached = self._dedup_cache.get(key)

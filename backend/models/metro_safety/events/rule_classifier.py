@@ -357,11 +357,15 @@ class RuleBasedEventClassifier:
                     self.track_machines[tid].fall_motion_induced = False
                     self.track_machines[tid].positive_drop_frames = 0
                     self.track_machines[tid].drop_deltas = []
+                    # Discard contaminated prior observations before kinematics resumes
+                    self.track_machines[tid].observations = self.track_machines[tid].observations[-1:]
                 if self.track_machines[tid].jump_motion_induced:
                     self.track_machines[tid].confirmed_jump = False
                     self.track_machines[tid].jump_motion_induced = False
                     self.track_machines[tid].positive_jump_frames = 0
                     self.track_machines[tid].jump_deltas = []
+                    # Discard contaminated prior observations before kinematics resumes
+                    self.track_machines[tid].observations = self.track_machines[tid].observations[-1:]
 
             pre_fall = self.track_machines[tid].confirmed_fall
             pre_jump = self.track_machines[tid].confirmed_jump

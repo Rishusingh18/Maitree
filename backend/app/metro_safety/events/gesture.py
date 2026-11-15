@@ -133,9 +133,10 @@ class TrackGestureStateMachine:
         else:
             self.crossed_persist_count = max(0, self.crossed_persist_count - 1)
 
-        # Raised hand requires at least 8 observations to run waving-rejection check
+        # Raised hand requires at least 8 observations and confirmed micro-gesture sequence evidence
         has_min_obs_for_waving = len(self.history) >= 8
-        if hand_raised and not is_waving and has_min_obs_for_waving:
+        has_signal_sequence = any(o.signal_for_help_stage > 0 for o in self.history)
+        if hand_raised and not is_waving and has_min_obs_for_waving and has_signal_sequence:
             self.signal_persist_count += 1
         else:
             self.signal_persist_count = max(0, self.signal_persist_count - 1)
@@ -161,8 +162,8 @@ class TrackGestureStateMachine:
                 }
             )
 
-        # Trigger check: Signal for Help (Hand raised & held steady)
-        if self.signal_persist_count >= (self.min_persistence + 2):
+        # Trigger check: Signal for Help (Hand raised & held steady with confirmed sequence)
+        if self.signal_persist_count >= (self.min_persistence + 2) and has_signal_sequence:
             self.last_trigger_frame = frame_idx
             self.signal_persist_count = 0
             return SafetyEvent(

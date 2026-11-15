@@ -183,7 +183,11 @@ class ZoneManager:
             if not valid:
                 logger.error(f"[ZoneManager] Proposed zone '{name}' failed validation ({err_msg}). Rejection atomic.")
                 return False
-            temp_zones[name] = Zone(name, [tuple(pt) for pt in poly], strict_validate=True)
+            try:
+                temp_zones[name] = Zone(name, [tuple(pt) for pt in poly], strict_validate=True)
+            except ValueError as ve:
+                logger.error(f"[ZoneManager] Proposed zone '{name}' construction failed ({ve}). Rejection atomic.")
+                return False
 
         # Atomic swap
         self.zones = temp_zones

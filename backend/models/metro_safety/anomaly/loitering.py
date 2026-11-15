@@ -26,6 +26,7 @@ class DwellTrackState:
     l1_alerted: bool = False
     l2_alerted: bool = False
     l2_trusted_alerted: bool = False
+    episode_id: int = 1
 
 
 class LoiteringDetector:
@@ -136,6 +137,7 @@ class LoiteringDetector:
                                 "duration_sec": st.dwell_duration,
                                 "dwell_radius_px": self.radius_px,
                                 "displacement_px": round(dist_from_anchor, 1),
+                                "episode_id": getattr(st, "episode_id", 1),
                                 "severity_cap": "L2",
                                 "severity_code": "L2",
                                 "disclaimer": "operator welfare review",
@@ -163,6 +165,7 @@ class LoiteringDetector:
                                 "duration_sec": st.dwell_duration,
                                 "dwell_radius_px": self.radius_px,
                                 "displacement_px": round(dist_from_anchor, 1),
+                                "episode_id": getattr(st, "episode_id", 1),
                                 "severity_cap": "L1",
                                 "severity_code": "L1",
                                 "disclaimer": "operator welfare review",
@@ -181,6 +184,7 @@ class LoiteringDetector:
                 st.l1_alerted = False
                 st.l2_alerted = False
                 st.l2_trusted_alerted = False
+                st.episode_id = getattr(st, "episode_id", 0) + 1
 
         # Prune inactive tracks with a bounded timeout (2.5s) to preserve continuity across occasional missed detections
         dead_tids = [tid for tid, st in self.track_states.items() if tid not in current_tids and (timestamp - st.last_seen_ts) > 2.5]

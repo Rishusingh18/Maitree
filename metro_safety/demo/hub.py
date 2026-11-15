@@ -94,7 +94,19 @@ def save_incident_snapshot(
         return {}
 
 
-def _read_bounded_log_tail(file_path: Path, max_lines: int = 150, max_bytes: int = 65536) -> List[str]:
+def _send_buzzer_command(cmd_data: Dict[str, Any]):
+    try:
+        cmd_dir = Path("data/cache/buzzer_cmds")
+        cmd_dir.mkdir(parents=True, exist_ok=True)
+        cmd_file = cmd_dir / f"cmd_{time.time_ns()}_{uuid.uuid4().hex[:6]}.json"
+        cmd_file.write_text(json.dumps(cmd_data), encoding="utf-8")
+        legacy = Path("data/cache/buzzer_control.cmd")
+        legacy.write_text(json.dumps(cmd_data), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _read_bounded_log_tail(file_path: Path, max_lines: int = 150, max_bytes: int = 262144) -> List[str]:
     """Read at most max_lines from the tail of a file without scanning the whole file."""
     try:
         size = file_path.stat().st_size
@@ -104,8 +116,15 @@ def _read_bounded_log_tail(file_path: Path, max_lines: int = 150, max_bytes: int
             if size > max_bytes:
                 f.seek(size - max_bytes)
                 f.readline()
-            chunk = f.read().decode("utf-8", errors="replace")
-        lines = chunk.splitlines()
+                chunk = f.read().decode("utf-8", errors="replace")
+                lines = chunk.splitlines()
+                if not lines:
+                    f.seek(0)
+                    chunk = f.read().decode("utf-8", errors="replace")
+                    lines = chunk.splitlines()
+            else:
+                chunk = f.read().decode("utf-8", errors="replace")
+                lines = chunk.splitlines()
         return lines[-max_lines:]
     except Exception:
         return []
@@ -633,10 +652,11 @@ class LiveHub:
                 except Exception:
                     pass
 
-        # Persist recent events to disk for cross-process
+        # Persist recent events to disk for cross-process (exclude bulky base64 data URI)
         try:
+            disk_rec = {k: v for k, v in event_record.items() if k != "snapshot_data"}
             with open(EVENTS_CACHE_PATH, "a", encoding="utf-8") as f:
-                f.write(json.dumps(event_record) + "\n")
+                f.write(json.dumps(disk_rec) + "\n")
         except Exception:
             pass
 
@@ -733,12 +753,7 @@ class LiveHub:
         })
 
         # Dispatch cross-process IPC to active producer buzzer
-        try:
-            buzzer_cmd = Path("data/cache/buzzer_control.cmd")
-            buzzer_cmd.parent.mkdir(parents=True, exist_ok=True)
-            buzzer_cmd.write_text(json.dumps({"action": "acknowledge", "timestamp": time.time()}), encoding="utf-8")
-        except Exception:
-            pass
+        _send_buzzer_command({"action": "acknowledge", "timestamp": time.time()})
 
         return {"status": "ok", "message": "Alarm acknowledged and buzzer silenced."}
 
@@ -775,12 +790,7 @@ class LiveHub:
         # Dispatch cross-process IPC to active producer buzzer when this hub is not the producer
         is_active_producer = bool(self.producer_pid == os.getpid() and getattr(self, "_is_vision_producer", False))
         if not is_active_producer:
-            try:
-                buzzer_cmd = Path("data/cache/buzzer_control.cmd")
-                buzzer_cmd.parent.mkdir(parents=True, exist_ok=True)
-                buzzer_cmd.write_text(json.dumps({"action": "toggle_mute", "timestamp": time.time()}), encoding="utf-8")
-            except Exception:
-                pass
+            _send_buzzer_command({"action": "set_mute", "desired_mute": new_mute, "timestamp": time.time()})
 
         return {"status": "ok", "muted": new_mute}
 
@@ -907,14 +917,18 @@ class LiveHub:
 
     def reset_ets(self) -> Dict[str, Any]:
         with self._lock:
-            self.ets_status = "DISENGAGED"
-            self._explicit_ets_status = True
-            logger.info("[SAFETY TRIP] Emergency Trip Switch reset to DISENGAGED.")
             if hasattr(self, "trip_switch") and self.trip_switch is not None:
                 try:
                     self.trip_switch.reset(operator="Operator", timestamp=time.time())
                 except Exception as _re:
-                    logger.warning(f"Error resetting trip_switch: {_re}")
+                    logger.error(f"Error resetting trip_switch: {_re}")
+                    self.ets_status = "UNKNOWN"
+                    self._explicit_ets_status = True
+                    return {"status": "error", "message": f"Trip switch reset failed: {_re}", "ets_status": "UNKNOWN"}
+
+            self.ets_status = "DISENGAGED"
+            self._explicit_ets_status = True
+            logger.info("[SAFETY TRIP] Emergency Trip Switch reset to DISENGAGED.")
             try:
                 if TELEMETRY_CACHE_PATH.exists():
                     cached = json.loads(TELEMETRY_CACHE_PATH.read_text())

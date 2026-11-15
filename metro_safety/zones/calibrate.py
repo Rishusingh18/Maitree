@@ -48,6 +48,12 @@ def calibrate_zones(
     while True:
         ret, frame, _ = source.read()
         if not ret or frame is None:
+            key = cv2.waitKey(20) & 0xFF
+            if key == ord('q'):
+                print("\n[Calibration Aborted] User canceled live framing.")
+                source.release()
+                cv2.destroyAllWindows()
+                return False
             time.sleep(0.05)
             continue
 
@@ -242,7 +248,7 @@ def calibrate_zones(
 
             # Save reference frame image and reference polygons (configuration-specific and staged)
             cfg_stem = cfg_file.stem
-            if cfg_stem in ("config", "config_baseline"):
+            if cfg_stem == "config":
                 ref_img_name = "reference_frame.jpg"
                 ref_poly_name = "reference_polygons.json"
             else:

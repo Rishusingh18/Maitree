@@ -45,7 +45,7 @@ class OverlookerNotifier:
         self.telegram_config = telegram_config or {"enabled": False, "bot_token": "", "chat_id": ""}
         self.dashboard_hub = dashboard_hub
 
-        self._last_sent_times: Dict[str, float] = {}
+        self._last_sent_times: Dict[Any, float] = {}
         self._lock = threading.Lock()
 
     def should_notify(self, severity: str, event_type: str) -> Tuple[bool, str]:
@@ -57,14 +57,15 @@ class OverlookerNotifier:
 
         with self._lock:
             now = time.time()
-            last_time = self._last_sent_times.get(event_type, 0.0)
+            cooldown_key = (event_type, sev)
+            last_time = self._last_sent_times.get(cooldown_key, 0.0)
             elapsed = now - last_time
             if elapsed < self.cooldown_sec:
                 remaining = self.cooldown_sec - elapsed
-                return False, f"Cooldown active for '{event_type}' ({remaining:.1f}s remaining)"
+                return False, f"Cooldown active for '{event_type}' [{sev}] ({remaining:.1f}s remaining)"
 
-            # Update cooldown timestamp
-            self._last_sent_times[event_type] = now
+            # Update cooldown timestamp for this severity
+            self._last_sent_times[cooldown_key] = now
             return True, "OK"
 
     def notify(
@@ -248,3 +249,27 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($template)
         except Exception as e:
             logger.debug(f"Optional Telegram dispatch failed (non-critical): {e}")
 
+
+    def send_alert(self, event: Any, severity: Any, action_msg: str) -> bool:
+        """Compatibility method routing EscalationEngine.send_alert calls to notify()."""
+        sev_str = severity.value if hasattr(severity, "value") else str(severity)
+        ev_type = getattr(event, "event_type", "INCIDENT")
+        ev_type_str = ev_type.value if hasattr(ev_type, "value") else str(ev_type)
+        track_id = getattr(event, "track_id", 0) or 0
+        zone = getattr(event, "zone", "platform") or "platform"
+        meta = getattr(event, "metadata", {}) or {}
+        confidence = float(getattr(event, "confidence", 1.0) or 1.0)
+        frames = getattr(event, "evidence_frames", [])
+        f_idx = frames[-1] if frames else 0
+
+        res = self.notify(
+            event_type=ev_type_str,
+            severity=sev_str,
+            track_id=track_id,
+            zone=zone,
+            action_msg=action_msg,
+            confidence=confidence,
+            frame_idx=f_idx,
+            metadata=meta
+        )
+        return bool(res.get("success", False))

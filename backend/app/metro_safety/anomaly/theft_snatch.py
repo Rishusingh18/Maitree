@@ -161,12 +161,15 @@ class TheftSnatchDetector:
             
             hist = self.object_velocity_history[bid]
             instant_speed = 0.0
+            fresh_ts = getattr(bag, "last_seen_ts", now)
             if hist:
                 last_x, last_y, last_t, _ = hist[-1]
-                dt = max(0.001, now - last_t)
-                instant_speed = math.hypot(bx - last_x, by - last_y) / (dt * 30.0) # approx px/frame at 30fps
-            
-            hist.append((bx, by, now, instant_speed))
+                if fresh_ts > last_t:
+                    dt = max(0.001, fresh_ts - last_t)
+                    instant_speed = math.hypot(bx - last_x, by - last_y) / (dt * 30.0)
+                    hist.append((bx, by, fresh_ts, instant_speed))
+            else:
+                hist.append((bx, by, fresh_ts, 0.0))
             if len(hist) > 30:
                 hist.pop(0)
 
@@ -328,14 +331,7 @@ class TheftSnatchDetector:
                         )
                         events.append(ev)
 
-                # Timeout stale candidate
-                if elapsed > self.owner_follow_sec + 2.0:
-                    self.resolved_interactions[bid] = {
-                        "suspect": cand.suspect_track_id,
-                        "victim": cand.victim_track_id,
-                        "ts": now
-                    }
-                    del self.candidates[bid]
+
 
             else:
                 # Check for new snatch attempt on this bag

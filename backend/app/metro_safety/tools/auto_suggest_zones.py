@@ -49,8 +49,10 @@ def auto_suggest_zones(
                 x1, y1, x2, y2 = pts
                 # Look for near-horizontal or slightly angled lines in lower 60% of frame
                 if min(y1, y2) > int(h * 0.35) and max(y1, y2) < int(h * 0.90):
-                    angle = abs(math.atan2(float(y2 - y1), float(x2 - x1)) * 180.0 / math.pi)
-                    if angle < 35.0:  # near horizontal
+                    angle = abs(math.atan2(float(y2 - y1), float(x2 - x1)) * 180.0 / math.pi) % 180.0
+                    if angle > 90.0:
+                        angle = 180.0 - angle
+                    if angle < 35.0:  # near horizontal (normalized acute angle)
                         y_candidates.append(float(y1 + y2) / 2.0)
         if y_candidates:
             platform_edge_y = int(np.median(y_candidates))

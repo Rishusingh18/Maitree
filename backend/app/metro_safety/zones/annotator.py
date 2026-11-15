@@ -121,7 +121,7 @@ def run_annotator(image_path: str, output_yaml: str):
             if len(current_points) >= 3:
                 fixed_pts = reorder_polygon_around_centroid(current_points)
                 valid, err_msg = validate_polygon(fixed_pts, name=curr_name)
-                current_points = fixed_pts
+                current_points = [(int(round(p[0])), int(round(p[1]))) for p in fixed_pts]
                 if valid:
                     status_msg = "[AUTO-FIX APPLIED] Reordered around centroid. Press 'c' to accept."
                     status_color = (0, 255, 0)

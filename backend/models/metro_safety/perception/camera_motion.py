@@ -112,6 +112,16 @@ class CameraMotionDetector:
                 good_prev = self.prev_pts[status.ravel() == 1]
                 good_curr = curr_pts[status.ravel() == 1]
 
+                if person_boxes and len(good_curr) > 0:
+                    pts_2d = good_curr.reshape(-1, 2)
+                    bg_mask = np.ones(len(pts_2d), dtype=bool)
+                    for b in person_boxes:
+                        x1, y1, x2, y2 = b[0] - 5, b[1] - 5, b[2] + 5, b[3] + 5
+                        in_box = (pts_2d[:, 0] >= x1) & (pts_2d[:, 0] <= x2) & (pts_2d[:, 1] >= y1) & (pts_2d[:, 1] <= y2)
+                        bg_mask &= ~in_box
+                    good_prev = good_prev[bg_mask]
+                    good_curr = good_curr[bg_mask]
+
                 if len(good_curr) >= 6:
                     diffs = (good_curr - good_prev).reshape(-1, 2)
                     displacements = np.hypot(diffs[:, 0], diffs[:, 1])

@@ -187,7 +187,9 @@ def run_live_pipeline(
         inference_size=inference_size
     )
     if hasattr(pose_detector, "_model") and pose_detector._model is not None:
-        anomaly_engine.set_object_detector(pose_detector._model)
+        names = getattr(pose_detector._model, "names", {})
+        if isinstance(names, dict) and any(cls_name in names.values() for cls_name in ["backpack", "handbag", "suitcase"]):
+            anomaly_engine.set_object_detector(pose_detector._model)
 
     # Decoupled async inference worker running DNN on dedicated thread (enabling 25+ FPS display rate)
     async_inference = AsyncInferenceWorker(detector=pose_detector, frame_skip=frame_skip)
@@ -287,7 +289,28 @@ def run_live_pipeline(
                 except Exception:
                     pass
 
-            # Check for cross-process buzzer control command (acknowledge / mute)
+            # Check for queued cross-process buzzer control commands
+            b_cmds_dir = Path("data/cache/buzzer_cmds")
+            b_cmd_files = sorted(b_cmds_dir.glob("*.json")) if b_cmds_dir.exists() else []
+            for b_file in b_cmd_files:
+                try:
+                    b_data = json.loads(b_file.read_text(encoding="utf-8"))
+                    b_file.unlink()
+                    act = b_data.get("action")
+                    if act == "acknowledge" and buzzer:
+                        buzzer.acknowledge()
+                    elif act in ("toggle_mute", "set_mute") and buzzer:
+                        desired = b_data.get("desired_mute")
+                        if desired is not None:
+                            buzzer.is_muted = desired
+                        else:
+                            buzzer.toggle_mute()
+                except Exception:
+                    try:
+                        b_file.unlink()
+                    except Exception:
+                        pass
+
             buzzer_cmd = Path("data/cache/buzzer_control.cmd")
             if buzzer_cmd.exists():
                 try:
@@ -298,8 +321,12 @@ def run_live_pipeline(
                         act = b_data.get("action")
                         if act == "acknowledge" and buzzer:
                             buzzer.acknowledge()
-                        elif act == "toggle_mute" and buzzer:
-                            buzzer.toggle_mute()
+                        elif act in ("toggle_mute", "set_mute") and buzzer:
+                            desired = b_data.get("desired_mute")
+                            if desired is not None:
+                                buzzer.is_muted = desired
+                            else:
+                                buzzer.toggle_mute()
                 except Exception:
                     pass
 
@@ -316,7 +343,7 @@ def run_live_pipeline(
                         print(f"[Live] Video file reached terminal EOF after {frame_idx} frames. Stopping.")
                         break
                     hub.update_frame(None, is_online=False, status_msg=frame_source.source_name)
-                    hub.update_telemetry(fps=0.0, latency_ms=0.0, pipeline_stages={}, is_online=False)
+                    hub.update_telemetry(fps=0.0, latency_ms=0.0)
                     time.sleep(0.04)
                     continue
 

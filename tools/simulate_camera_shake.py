@@ -193,8 +193,8 @@ def verify_drift_against_ground_truth(
                         pairs.append((float(estimated_drifts[f_idx]), gt_map[f_idx]))
             else:
                 window_len = end_f - start_f + 1
-                if len(estimated_drifts) < window_len:
-                    raise ValueError(f"Dense estimated_drifts ({len(estimated_drifts)}) does not cover eval_window {eval_window}")
+                if len(estimated_drifts) != window_len:
+                    raise ValueError(f"Dense estimated_drifts length ({len(estimated_drifts)}) must exactly match eval_window length {window_len} (frames {start_f}..{end_f})")
                 for offset, f_idx in enumerate(range(start_f, end_f + 1)):
                     if f_idx in gt_map:
                         pairs.append((float(estimated_drifts[offset]), gt_map[f_idx]))

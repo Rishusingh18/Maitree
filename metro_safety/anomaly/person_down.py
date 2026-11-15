@@ -31,6 +31,7 @@ class ProneTrackState:
     linked_fall_id: Optional[str] = None
     l1_alerted: bool = False
     l2_alerted: bool = False
+    l2_trusted_alerted: bool = False
 
 
 class PersonDownDetector:
@@ -124,7 +125,9 @@ class PersonDownDetector:
         tracked_dets: List[Detection],
         zone_manager: ZoneManager,
         train_state: str = "ABSENT",
-        active_falls_map: Optional[Dict[int, str]] = None
+        active_falls_map: Optional[Dict[int, str]] = None,
+        camera_motion: bool = False,
+        zones_unverified: bool = False
     ) -> List[SafetyEvent]:
         """Evaluate tracked persons for sustained unresponsive prone states."""
         events: List[SafetyEvent] = []
@@ -216,8 +219,8 @@ class PersonDownDetector:
             state.last_seen_ts = timestamp
             state.last_position = foot
 
-            # Link with fall if fall occurred on this track
-            if tid in active_falls and not state.linked_fall_id:
+            # Link with fall if fall occurred on this track (replace stale link)
+            if tid in active_falls:
                 state.linked_fall_id = active_falls[tid]
 
             is_prone, angle, aspect, head_hip_dy, _ = self._is_pose_prone(det)
@@ -235,10 +238,12 @@ class PersonDownDetector:
             if len(recent_window) >= 2:
                 dt = max(0.1, recent_window[-1][2] - recent_window[0][2])
                 path_dist = 0.0
-                for k in range(len(recent_window) - 1):
-                    d_step = math.hypot(recent_window[k + 1][0] - recent_window[k][0], recent_window[k + 1][1] - recent_window[k][1])
-                    if d_step > 1.2:  # deadband for sub-pixel / 1px detection jitter
-                        path_dist += d_step
+                anchor_pt = recent_window[0]
+                for k in range(1, len(recent_window)):
+                    disp = math.hypot(recent_window[k][0] - anchor_pt[0], recent_window[k][1] - anchor_pt[1])
+                    if disp > 1.2:  # rate-independent deadband
+                        path_dist += disp
+                        anchor_pt = recent_window[k]
                 state.motion_energy = round(path_dist / dt, 2)
             else:
                 state.motion_energy = 0.0
@@ -259,8 +264,9 @@ class PersonDownDetector:
                 state.prone_duration = round(timestamp - state.first_prone_ts, 1)
 
                 # Check escalation timers: T1 -> L1, T2 -> L2
+                is_low_trust = bool(camera_motion or zones_unverified)
                 if state.prone_duration >= self.prone_t2_sec:
-                    if not state.l2_alerted:
+                    if not (state.l2_alerted and (state.l2_trusted_alerted or is_low_trust)):
                         # L2 Welfare Alert
                         ev = SafetyEvent(
                             event_type=EventType.PERSON_DOWN,
@@ -270,6 +276,8 @@ class PersonDownDetector:
                             zone=zone,
                             train_state=train_state,
                             evidence_frames=[frame_idx],
+                            camera_motion=camera_motion,
+                            zones_unverified=zones_unverified,
                             metadata={
                                 "duration_sec": state.prone_duration,
                                 "torso_angle": state.torso_angle,
@@ -279,12 +287,15 @@ class PersonDownDetector:
                                 "severity_code": "L2",
                                 "disclaimer": "operator welfare review",
                                 "linked_fall_id": state.linked_fall_id,
-                                "welfare_alert": "Possible medical emergency - person unresponsive"
+                                "welfare_alert": "Possible medical emergency - person unresponsive",
+                                "low_trust": is_low_trust
                             }
                         )
                         ev.is_anomaly = True
                         ev.linked_fall_id = state.linked_fall_id
                         state.l2_alerted = True
+                        if not is_low_trust:
+                            state.l2_trusted_alerted = True
                         events.append(ev)
 
                 elif state.prone_duration >= self.prone_t1_sec:

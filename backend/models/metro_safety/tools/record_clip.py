@@ -45,7 +45,15 @@ def record_clip(
         while True:
             ret, frame, _ = frame_source.read()
             if not ret or frame is None:
-                time.sleep(0.01)
+                if t_start and (time.time() - t_start) >= seconds:
+                    print("Reached recording duration limit during camera outage.")
+                    break
+                if show_window:
+                    key = cv2.waitKey(20) & 0xFF
+                    if key == ord('q'):
+                        print("User requested early stop during camera outage.")
+                        break
+                time.sleep(0.02)
                 continue
 
             h, w = frame.shape[:2]
@@ -54,6 +62,8 @@ def record_clip(
             if writer is None:
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                 writer = cv2.VideoWriter(str(out_file), fourcc, fps_estimate, (w, h))
+                if not writer.isOpened():
+                    raise RuntimeError(f"Failed to open video writer for {out_file}")
                 t_start = time.time()
                 print(f"Capturing at {w}x{h} resolution...")
 

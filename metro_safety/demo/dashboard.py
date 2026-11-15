@@ -546,12 +546,20 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
         }
 
         function updateTelemetry() {
-            fetch('/api/telemetry')
+            if (telemetryAbortCtrl) {
+                telemetryAbortCtrl.abort();
+            }
+            telemetryAbortCtrl = new AbortController();
+            const signal = telemetryAbortCtrl.signal;
+            const tId = setTimeout(() => { if (telemetryAbortCtrl) telemetryAbortCtrl.abort(); }, 4000);
+
+            fetch('/api/telemetry', { signal })
                 .then(r => {
                     if (!r.ok) throw new Error('Telemetry HTTP ' + r.status);
                     return r.json();
                 })
                 .then(data => {
+                    clearTimeout(tId);
                     consecutiveFailedPolls = 0;
                     lastTelemetryTime = new Date();
                     setBackendDeadState(false);
@@ -681,6 +689,8 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                     }
                 })
                 .catch(err => {
+                    clearTimeout(tId);
+                    if (err.name === 'AbortError') return;
                     console.debug('Telemetry poll error:', err);
                     consecutiveFailedPolls++;
                     if (consecutiveFailedPolls >= 3) {

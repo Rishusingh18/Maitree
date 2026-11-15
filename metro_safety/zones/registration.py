@@ -211,6 +211,10 @@ class AdaptiveZoneTracker:
             elif self._orb is not None:
                 self.ref_kps, self.ref_des = self._orb.detectAndCompute(self.ref_gray_640, mask)
 
+            if self.ref_des is None or len(self.ref_des) == 0:
+                self.status = AlignmentStatus.UNVERIFIED_REFERENCE
+                self.requires_operator_confirmation = True
+                logger.warning("[AdaptiveZones] Reference frame yielded no descriptors; state set to UNVERIFIED_REFERENCE.")
             logger.info(
                 f"[AdaptiveZones] Reference frame initialized ({self.ref_w}x{self.ref_h}). "
                 f"Features detected: {len(self.ref_kps) if self.ref_kps else 0}"
@@ -236,6 +240,10 @@ class AdaptiveZoneTracker:
     def set_demo_mode(self, is_demo: bool):
         """Disable registration on synthetic demo/fallback and reset state on switch."""
         with self._lock:
+            current_is_demo = getattr(self, "_is_demo_mode", None)
+            if current_is_demo == is_demo:
+                return
+            self._is_demo_mode = is_demo
             self._mode_generation += 1
             self._pending_frame = None
             self._pending_boxes = []
@@ -246,7 +254,8 @@ class AdaptiveZoneTracker:
                 self.status = AlignmentStatus.DISABLED_DEMO
             else:
                 if self.status == AlignmentStatus.DISABLED_DEMO:
-                    if not self.ref_path.exists() or self.reference_frame is None:
+                    prior_req = getattr(self, "requires_operator_confirmation", False)
+                    if not self.ref_path.exists() or self.reference_frame is None or prior_req:
                         self.status = AlignmentStatus.UNVERIFIED_REFERENCE
                         self.requires_operator_confirmation = True
                     else:
@@ -647,15 +656,26 @@ class AdaptiveZoneTracker:
             )
             return
 
-        # If operator confirmation is currently required, do not auto-clear proposals or auto-apply updates
+        # If operator confirmation is currently required, refresh proposals from newer valid registration
         if self.requires_operator_confirmation:
-            logger.debug("[AdaptiveZones] Operator confirmation required; skipping auto-update.")
+            if result.valid and result.transformed_zones:
+                self.proposed_zones = copy.deepcopy(result.transformed_zones)
+                self.proposed_homography = result.homography.copy() if result.homography is not None else None
+            elif not result.valid:
+                self.proposed_zones = None
+                self.proposed_homography = None
+            logger.debug("[AdaptiveZones] Operator confirmation required; updated proposals and skipping auto-update.")
             return
 
         # Camera returned to valid drift: refresh or clear stale proposals
         self.drift_breached = False
         self.proposed_zones = None
         self.proposed_homography = None
+
+        # Initialize correction clock from first submitted frame timestamp if needed
+        if not getattr(self, "_first_frame_ts_set", False):
+            self.last_correction_time = timestamp
+            self._first_frame_ts_set = True
 
         # Check max correction rate per second
         dt = max(0.01, timestamp - self.last_correction_time)

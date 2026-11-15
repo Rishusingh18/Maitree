@@ -120,9 +120,17 @@ class AsyncInferenceWorker:
                 if len(self._infer_history) > 100:
                     self._infer_history.pop(0)
 
+                self._success_timestamps.append(t1)
+                if len(self._success_timestamps) > 50:
+                    self._success_timestamps.pop(0)
+
                 self.forward_median_ms = float(np.median(self._infer_history))
                 self.forward_p95_ms = float(np.percentile(self._infer_history, 95))
-                self.true_detector_fps = round(1000.0 / self.forward_median_ms, 1) if self.forward_median_ms > 0 else 0.0
+                if len(self._success_timestamps) >= 2:
+                    elapsed = self._success_timestamps[-1] - self._success_timestamps[0]
+                    self.true_detector_fps = round((len(self._success_timestamps) - 1) / elapsed, 1) if elapsed > 0 else 0.0
+                else:
+                    self.true_detector_fps = round(1000.0 / self.forward_median_ms, 1) if self.forward_median_ms > 0 else 0.0
                 self.inference_latency_ms = self.forward_median_ms
                 self.inference_fps = self.true_detector_fps
 

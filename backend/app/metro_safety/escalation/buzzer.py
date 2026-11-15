@@ -280,7 +280,8 @@ class HardwareBuzzer(BasePlatformBuzzer):
                 self._beep_fn(self.l2_freq, self.l2_beep_ms)
                 time.sleep(0.3)
             elif pattern == "L3":
-                # L3: Continuous urgent wailing siren
+                # L3: Continuous urgent wailing siren with interruptible minimum interval
                 self._beep_fn(self.l3_low_freq, 150)
                 self._beep_fn(self.l3_high_freq, 150)
+                self._stop_event.wait(timeout=0.05)
 

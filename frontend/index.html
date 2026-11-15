@@ -2563,7 +2563,8 @@
         const sevBg = inc.severity === 'CRITICAL' ? 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-400' :
                       inc.severity === 'HIGH' ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400' :
                       'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300';
-        const thumbSrc = inc.snapshot_data || inc.snapshot_url || (inc._raw && (inc._raw.snapshot_data || inc._raw.snapshot_url || inc._raw.snapshot_crop)) || inc.img || 'assets/cam101_rajiv_chowk.jpg';
+        const rawThumb = inc.snapshot_data || inc.snapshot_url || (inc._raw && (inc._raw.snapshot_data || inc._raw.snapshot_url || inc._raw.snapshot_crop)) || inc.img || 'assets/cam101_rajiv_chowk.jpg';
+        const thumbSrc = (typeof rawThumb === 'string' && (rawThumb.startsWith('data:image/') || rawThumb.startsWith('/') || rawThumb.startsWith('assets/'))) ? rawThumb.replace(/"/g, '&quot;') : 'assets/cam101_rajiv_chowk.jpg';
         
         return `
           <tr class="hover:bg-[var(--surface-secondary)] transition-colors cursor-pointer" onclick="openIncidentDrawer('${inc.id}')">
@@ -2993,7 +2994,8 @@
         const sevBg = inc.severity === 'CRITICAL' ? 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-400' :
                       inc.severity === 'HIGH' ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400' :
                       'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300';
-        const thumbSrc = inc.snapshot_data || inc.snapshot_url || (inc._raw && (inc._raw.snapshot_data || inc._raw.snapshot_url || inc._raw.snapshot_crop)) || inc.img || 'assets/cam101_rajiv_chowk.jpg';
+        const rawThumb = inc.snapshot_data || inc.snapshot_url || (inc._raw && (inc._raw.snapshot_data || inc._raw.snapshot_url || inc._raw.snapshot_crop)) || inc.img || 'assets/cam101_rajiv_chowk.jpg';
+        const thumbSrc = (typeof rawThumb === 'string' && (rawThumb.startsWith('data:image/') || rawThumb.startsWith('/') || rawThumb.startsWith('assets/'))) ? rawThumb.replace(/"/g, '&quot;') : 'assets/cam101_rajiv_chowk.jpg';
 
         return `
           <tr class="hover:bg-[var(--surface-secondary)] transition-colors cursor-pointer" onclick="openIncidentDrawer('${inc.id}')">
@@ -3059,7 +3061,8 @@
       if (!tbody) return;
 
       tbody.innerHTML = list.map(inc => {
-        const thumbSrc = inc.snapshot_data || inc.snapshot_url || (inc._raw && (inc._raw.snapshot_data || inc._raw.snapshot_url || inc._raw.snapshot_crop)) || inc.img || 'assets/cam101_rajiv_chowk.jpg';
+        const rawThumb = inc.snapshot_data || inc.snapshot_url || (inc._raw && (inc._raw.snapshot_data || inc._raw.snapshot_url || inc._raw.snapshot_crop)) || inc.img || 'assets/cam101_rajiv_chowk.jpg';
+        const thumbSrc = (typeof rawThumb === 'string' && (rawThumb.startsWith('data:image/') || rawThumb.startsWith('/') || rawThumb.startsWith('assets/'))) ? rawThumb.replace(/"/g, '&quot;') : 'assets/cam101_rajiv_chowk.jpg';
         return `
         <tr class="hover:bg-[var(--surface-secondary)] transition-colors cursor-pointer" onclick="openIncidentDrawer('${inc.id}')">
           <td class="py-3 px-3 font-semibold text-blue-600">

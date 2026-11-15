@@ -160,7 +160,8 @@ class ThreadedStreamSource(FrameSource):
         self._init_capture()
 
     def _init_capture(self) -> bool:
-        target_display = self.stream_target
+        import re
+        target_display = re.sub(r'://([^:]+):([^@]+)@', r'://\1:***@', str(self.stream_target))
         logger.info(f"Opening capture source: {target_display}")
         try:
             if isinstance(self.stream_target, int):
@@ -233,8 +234,7 @@ class ThreadedStreamSource(FrameSource):
                     self.retry_status = f"Retrying background connect (attempt #{self.reconnect_count})..."
                     logger.info(f"Background retry connect to primary source {self.stream_target} (attempt #{self.reconnect_count})...")
                     try:
-                        target_str = str(self.stream_target)
-                        new_cap = cv2.VideoCapture(target_str, cv2.CAP_FFMPEG if self.is_network else cv2.CAP_ANY)
+                        new_cap = cv2.VideoCapture(self.stream_target, cv2.CAP_FFMPEG if self.is_network else cv2.CAP_ANY)
                         new_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                         if new_cap.isOpened():
                             ret, frame = new_cap.read()
@@ -306,7 +306,7 @@ class ThreadedStreamSource(FrameSource):
             return self.fallback.read()
 
         with self.lock:
-            if self.latest_frame is None:
+            if not self._connected or self.latest_frame is None:
                 return False, None, 0.0
             # Return copy of latest frame
             return True, self.latest_frame.copy(), self.latest_timestamp

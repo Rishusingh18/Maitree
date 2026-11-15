@@ -158,20 +158,21 @@ def run_evaluation_suite(output_dir: Path | str = "eval_results") -> Dict[str, A
     # Generate Confusion Matrix Plot
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
-    for ax, cm, title, acc in zip(
+    for ax, cm, title, acc, cls_list in zip(
         axes,
         [cm_rule, cm_learned],
         ["Rule-Based State Machine", "Learned Classifier (GBDT)"],
-        [report_rule['accuracy'], report_learned['accuracy']]
+        [report_rule['accuracy'], report_learned['accuracy']],
+        [CLASSES, LEARNED_CLASSES]
     ):
         im = ax.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
         ax.set_title(f"{title} (Acc: {acc*100:.1f}%)", fontsize=12, fontweight='bold')
         plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        tick_marks = np.arange(len(CLASSES))
+        tick_marks = np.arange(len(cls_list))
         ax.set_xticks(tick_marks)
-        ax.set_xticklabels([c.replace("_", "\n") for c in CLASSES], rotation=0, fontsize=9)
+        ax.set_xticklabels([c.replace("_", "\n") for c in cls_list], rotation=0, fontsize=9)
         ax.set_yticks(tick_marks)
-        ax.set_yticklabels([c.replace("_", " ") for c in CLASSES], fontsize=9)
+        ax.set_yticklabels([c.replace("_", " ") for c in cls_list], fontsize=9)
         ax.set_ylabel('True Label', fontweight='bold')
         ax.set_xlabel('Predicted Label', fontweight='bold')
 

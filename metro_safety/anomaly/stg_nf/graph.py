@@ -49,7 +49,7 @@ class Graph:
             if self.headless:
                 neighbor_link = [(0, 1), (0, 2), (2, 4), (1, 3), (3, 5),
                                  (6, 8), (7, 9), (8, 10), (9, 11)]
-                self.num_node = 14
+                self.num_node = 12
             self_link = [(i, i) for i in range(self.num_node)]
             self.edge = self_link + neighbor_link
             self.center = 1

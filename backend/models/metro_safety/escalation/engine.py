@@ -8,7 +8,7 @@ With auto-escalation timer and audit trail.
 """
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Any, Union
+from typing import Set, List, Dict, Optional, Tuple, Any, Union
 import time
 import numpy as np
 
@@ -55,15 +55,18 @@ class EscalationEngine:
 
         self.active_intrusions: Dict[int, float] = {}  # track_id -> first detection timestamp
         self.active_audible_hazards: Dict[int, EventType] = {}  # track_id -> buzzer hazard event type
+        self.escalated_intrusions: Set[int] = set()
         self.decision_log: List[EscalationDecision] = []
 
-    def _safe_send_alert(self, event: SafetyEvent, severity: SeverityLevel, action_msg: str):
+    def _safe_send_alert(self, event: SafetyEvent, severity: SeverityLevel, action_msg: str) -> bool:
         """Isolate notifier/audit failures so they never block ETS or buzzer actuation."""
         try:
-            self.notifier.send_alert(event, severity, action_msg)
+            res = self.notifier.send_alert(event, severity, action_msg)
+            return True if res is None else bool(res)
         except Exception as e:
             import logging
             logging.getLogger("EscalationEngine").error(f"Notifier send_alert failed: {e}")
+            return False
 
     def _activate_buzzer(self, pattern: str):
         # Prevent overriding continuous emergency siren with pulsed warning
@@ -124,9 +127,8 @@ class EscalationEngine:
         if ev_type == EventType.DISTRESS_GESTURE:
             severity = SeverityLevel.DISTRESS
             action_msg = "Silent distress alarm dispatched to station security and control room."
-            cr_alert = True
             buzzer_active = False  # STRICT REQUIREMENT: NO audible buzzer to protect victim
-            self._safe_send_alert(event, severity, action_msg)
+            cr_alert = self._safe_send_alert(event, severity, action_msg)
 
         # 2. Confirmed Fall or Jump -> Immediate Level 3 Emergency
         elif ev_type in [EventType.ACCIDENTAL_FALL, EventType.DELIBERATE_JUMP]:
@@ -135,21 +137,19 @@ class EscalationEngine:
                 severity = SeverityLevel.L2
                 action_msg = f"CAMERA MOVING: needs operator review - {getattr(event, 'motion_reason', 'Optical flow vibration')}"
                 buzzer_active = True
-                cr_alert = True
                 ets_active = False
                 if event.track_id in self.active_intrusions:
                     del self.active_intrusions[event.track_id]
                 self.active_audible_hazards[event.track_id] = ev_type
                 self._activate_buzzer("PULSED")
-                self._safe_send_alert(event, severity, action_msg)
+                cr_alert = self._safe_send_alert(event, severity, action_msg)
             else:
                 severity = SeverityLevel.L3
                 action_msg = f"CRITICAL: {ev_type.value} on track! Actuating platform buzzer, alarm, and emergency stop recommendation."
                 buzzer_active = True
-                cr_alert = True
                 self.active_audible_hazards[event.track_id] = ev_type
                 self._activate_buzzer("CONTINUOUS_HIGH")
-                self._safe_send_alert(event, severity, action_msg)
+                cr_alert = self._safe_send_alert(event, severity, action_msg)
                 ets_active = self.trip_switch.trigger_stop(event, self.station_id, self.platform_id)
 
         # 3. Track Intrusion
@@ -164,10 +164,9 @@ class EscalationEngine:
                 severity = SeverityLevel.L3
                 action_msg = f"CRITICAL: Track intrusion with train approaching ({elapsed:.1f}s)! Triggering ETS."
                 buzzer_active = True
-                cr_alert = True
                 self.active_audible_hazards[event.track_id] = ev_type
                 self._activate_buzzer("CONTINUOUS_HIGH")
-                self._safe_send_alert(event, severity, action_msg)
+                cr_alert = self._safe_send_alert(event, severity, action_msg)
                 ets_active = self.trip_switch.trigger_stop(event, self.station_id, self.platform_id)
             else:
                 # Level 2: Person on track, train absent or far
@@ -288,6 +287,7 @@ class EscalationEngine:
         """Called when a person clears back to the platform."""
         if track_id in self.active_intrusions:
             del self.active_intrusions[track_id]
+        self.escalated_intrusions.discard(track_id)
         if track_id in self.active_audible_hazards:
             del self.active_audible_hazards[track_id]
         if not self.active_audible_hazards and not self.active_intrusions:
@@ -297,6 +297,8 @@ class EscalationEngine:
         """Independently re-evaluates active intrusions at or after auto_escalate_sec."""
         decisions = []
         for track_id, start_ts in list(self.active_intrusions.items()):
+            if track_id in self.escalated_intrusions:
+                continue
             elapsed = current_time - start_ts
             if elapsed >= self.auto_escalate_sec:
                 synthetic_ev = SafetyEvent(
@@ -308,6 +310,7 @@ class EscalationEngine:
                     train_state=train_state
                 )
                 dec = self.evaluate(synthetic_ev, current_time=current_time)
+                self.escalated_intrusions.add(track_id)
                 decisions.append(dec)
         return decisions
 

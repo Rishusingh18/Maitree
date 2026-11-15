@@ -122,7 +122,8 @@ class TrainStateProvider(ABC):
             return True
 
         # Fail-safe freshness check
-        if (t - record.timestamp) > self.fail_safe_timeout_sec:
+        rec_ts = getattr(record, "receipt_timestamp", 0.0) or record.timestamp
+        if (t - rec_ts) > self.fail_safe_timeout_sec:
             logger.warning(
                 f"[TrainStateProvider] Fail-safe ACTIVE for platform '{pid}': "
                 f"update stale by {t - record.timestamp:.2f}s (threshold {self.fail_safe_timeout_sec}s)"
@@ -157,7 +158,8 @@ class TrainStateProvider(ABC):
         record = self.get_state_record(pid)
         if record is None:
             return True
-        return (t - record.timestamp) > self.fail_safe_timeout_sec
+        rec_ts = getattr(record, "receipt_timestamp", 0.0) or record.timestamp
+        return (t - rec_ts) > self.fail_safe_timeout_sec
 
 
 BaseTrainStateProvider = TrainStateProvider
@@ -348,8 +350,11 @@ class SimulatedProvider(TrainStateProvider):
             try:
                 import math
                 cand_ts = float(msg_ts)
-                if math.isfinite(cand_ts) and 0.0 <= cand_ts <= (t + 300.0):
+                if math.isfinite(cand_ts) and 0.0 <= cand_ts <= t:
                     eff_ts = cand_ts
+                elif math.isfinite(cand_ts) and cand_ts > t:
+                    logger.warning(f"[SimulatedProvider] Normalizing future observation timestamp {cand_ts} to receipt {t}")
+                    eff_ts = t
                 else:
                     logger.warning(
                         f"[SimulatedProvider] Invalid or far-future MQTT timestamp {cand_ts} (receipt {t}), using receipt ts"
@@ -549,10 +554,30 @@ class VisionProvider(TrainStateProvider):
             fg_track = cv2.bitwise_and(fg_mask, fg_mask, mask=mask)
             motion_ratio = float(np.sum(fg_track > 0)) / track_area
 
+            prev_gray = getattr(self, "_prev_gray", {}).get(pid)
+            inter_frame_motion = 0.0
+            if prev_gray is not None:
+                diff = cv2.absdiff(gray, prev_gray)
+                diff_track = cv2.bitwise_and(diff, diff, mask=mask)
+                inter_frame_motion = float(np.sum(diff_track > 20)) / track_area
+            if not hasattr(self, "_prev_gray"):
+                self._prev_gray = {}
+            self._prev_gray[pid] = gray.copy()
+
+            prev_state = rec.state if rec else TrainState.ABSENT
+
             if motion_ratio > self.area_thresh:
-                curr_state = TrainState.STOPPED_DOORS_OPEN
+                if inter_frame_motion > 0.08 or prev_state == TrainState.ABSENT:
+                    curr_state = TrainState.APPROACHING
+                elif prev_state in (TrainState.STOPPED_DOORS_OPEN, TrainState.PRESENT) and inter_frame_motion > 0.08:
+                    curr_state = TrainState.DEPARTING
+                else:
+                    curr_state = TrainState.STOPPED_DOORS_OPEN
             elif motion_ratio > (self.area_thresh * 0.4):
-                curr_state = TrainState.APPROACHING
+                if prev_state in (TrainState.STOPPED_DOORS_OPEN, TrainState.DEPARTING):
+                    curr_state = TrainState.DEPARTING
+                else:
+                    curr_state = TrainState.APPROACHING
             else:
                 curr_state = TrainState.ABSENT
 

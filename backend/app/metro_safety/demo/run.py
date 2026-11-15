@@ -201,6 +201,68 @@ def run_pipeline(
 
             t_frame_start = time.perf_counter()
 
+            # Check for cross-process zone confirmation command (keyed by req_id)
+            for cmd_path in list(Path("data/cache").glob("zone_confirm*.cmd")):
+                try:
+                    cmd_content = cmd_path.read_text(encoding="utf-8")
+                    cmd_data = json.loads(cmd_content)
+                    cmd_path.unlink()
+                    req_id = cmd_data.get("req_id", "default")
+                    cmd_ts = float(cmd_data.get("timestamp", 0))
+                    if (time.time() - cmd_ts) <= 5.0:
+                        c_ok, c_msg = zone_tracker.confirm_alignment()
+                        resp_path = Path(f"data/cache/zone_confirm_{req_id}.resp")
+                        resp_path.write_text(json.dumps({
+                            "req_id": req_id,
+                            "status": "ok" if c_ok else "error",
+                            "message": c_msg
+                        }), encoding="utf-8")
+                    else:
+                        logger.warning(f"[Pipeline] Discarding timed-out zone confirmation command: req_id={req_id}")
+                except Exception:
+                    pass
+
+            # Check for queued cross-process buzzer control commands
+            b_cmds_dir = Path("data/cache/buzzer_cmds")
+            b_cmd_files = sorted(b_cmds_dir.glob("*.json")) if b_cmds_dir.exists() else []
+            for b_file in b_cmd_files:
+                try:
+                    b_data = json.loads(b_file.read_text(encoding="utf-8"))
+                    b_file.unlink()
+                    act = b_data.get("action")
+                    if act == "acknowledge" and buzzer:
+                        buzzer.acknowledge()
+                    elif act in ("toggle_mute", "set_mute") and buzzer:
+                        desired = b_data.get("desired_mute")
+                        if desired is not None:
+                            buzzer.is_muted = desired
+                        else:
+                            buzzer.toggle_mute()
+                except Exception:
+                    try:
+                        b_file.unlink()
+                    except Exception:
+                        pass
+
+            buzzer_cmd = Path("data/cache/buzzer_control.cmd")
+            if buzzer_cmd.exists():
+                try:
+                    b_content = buzzer_cmd.read_text(encoding="utf-8")
+                    b_data = json.loads(b_content)
+                    buzzer_cmd.unlink()
+                    if (time.time() - float(b_data.get("timestamp", 0))) <= 5.0:
+                        act = b_data.get("action")
+                        if act == "acknowledge" and buzzer:
+                            buzzer.acknowledge()
+                        elif act in ("toggle_mute", "set_mute") and buzzer:
+                            desired = b_data.get("desired_mute")
+                            if desired is not None:
+                                buzzer.is_muted = desired
+                            else:
+                                buzzer.toggle_mute()
+                except Exception:
+                    pass
+
             # Read latest non-stale frame from threaded source
             ret, frame, frame_ts = frame_source.read()
             if not ret or frame is None:
@@ -262,43 +324,7 @@ def run_pipeline(
             # 2. Tracking
             tracked_dets = tracker.update(detections)
 
-            # Check for cross-process zone confirmation command
-            cmd_path = Path("data/cache/zone_confirm.cmd")
-            if cmd_path.exists():
-                try:
-                    cmd_content = cmd_path.read_text(encoding="utf-8")
-                    cmd_data = json.loads(cmd_content)
-                    cmd_path.unlink()
-                    req_id = cmd_data.get("req_id")
-                    cmd_ts = float(cmd_data.get("timestamp", 0))
-                    if (time.time() - cmd_ts) <= 2.0:
-                        c_ok, c_msg = zone_tracker.confirm_alignment()
-                        resp_path = Path("data/cache/zone_confirm.resp")
-                        resp_path.write_text(json.dumps({
-                            "req_id": req_id,
-                            "status": "ok" if c_ok else "error",
-                            "message": c_msg
-                        }), encoding="utf-8")
-                    else:
-                        logger.warning(f"[Pipeline] Discarding timed-out zone confirmation command: req_id={req_id}")
-                except Exception:
-                    pass
 
-            # Check for cross-process buzzer control command (acknowledge / mute)
-            buzzer_cmd = Path("data/cache/buzzer_control.cmd")
-            if buzzer_cmd.exists():
-                try:
-                    b_content = buzzer_cmd.read_text(encoding="utf-8")
-                    b_data = json.loads(b_content)
-                    buzzer_cmd.unlink()
-                    if (time.time() - float(b_data.get("timestamp", 0))) <= 5.0:
-                        act = b_data.get("action")
-                        if act == "acknowledge" and buzzer:
-                            buzzer.acknowledge()
-                        elif act == "toggle_mute" and buzzer:
-                            buzzer.toggle_mute()
-                except Exception:
-                    pass
 
             # Adaptive Zone Tracking: Non-blocking frame registration
             person_boxes = [d.box for d in tracked_dets] if tracked_dets else [d.box for d in detections]
@@ -308,7 +334,7 @@ def run_pipeline(
             frame_zones_unverified = reg_result.zones_unverified
 
             # 3. Behavior Events, Gestures & Anomaly Detection
-            current_train_state = hub.train_state_provider.get_state() if hasattr(hub, "train_state_provider") and hub.train_state_provider else train_state
+            current_train_state = hub.train_state_provider.get_state(platform_id=getattr(hub, 'platform_id', None), timestamp=frame_ts) if hasattr(hub, "train_state_provider") and hub.train_state_provider else train_state
             rule_evs = rule_clf.process_frame(
                 frame_idx,
                 frame_ts,

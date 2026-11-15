@@ -175,6 +175,14 @@ class AbandonedObjectDetector:
             self._frame_count = max(self._frame_count + 1, frame_idx)
         else:
             self._frame_count += 1
+        # Prune dead bags after 5 seconds of non-detection ahead of association
+        last_proc = getattr(self, "_last_processed_ts", None)
+        if last_proc is not None:
+            dead_ids = [oid for oid, obj in self.tracked_objects.items() if obj.last_seen_ts < last_proc and (timestamp - obj.last_seen_ts) > 5.0]
+            for did in dead_ids:
+                del self.tracked_objects[did]
+        self._last_processed_ts = timestamp
+
         matched_obj_ids = set()
 
         for det in raw_detections:
@@ -232,10 +240,7 @@ class AbandonedObjectDetector:
                 )
                 matched_obj_ids.add(new_id)
 
-        # Prune dead bags after 5 seconds of non-detection
-        dead_ids = [oid for oid, obj in self.tracked_objects.items() if (timestamp - obj.last_seen_ts) > 5.0]
-        for did in dead_ids:
-            del self.tracked_objects[did]
+
 
     def process_frame(
         self,
@@ -259,7 +264,7 @@ class AbandonedObjectDetector:
         else:
             raw_objs, is_fresh = self.detect_objects_in_frame(frame, frame_idx, timestamp)
 
-        self._frame_count = max(self._frame_count + 1, frame_idx)
+        # update_objects advances _frame_count exactly once
         self.update_objects(raw_objs, timestamp, zone_manager, is_fresh=is_fresh, frame_idx=frame_idx)
 
         # Person positions
@@ -358,6 +363,8 @@ class AbandonedObjectDetector:
                         zone=obj.zone,
                         train_state=train_state,
                         evidence_frames=[frame_idx],
+                        camera_motion=camera_motion,
+                        zones_unverified=zones_unverified,
                         metadata={
                             "duration_sec": obj.unattended_duration,
                             "object_id": obj.object_id,

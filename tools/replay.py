@@ -129,13 +129,13 @@ def draw_hud(
             if theft_detector and hasattr(theft_detector, "confirmed_owners"):
                 owner_id = theft_detector.confirmed_owners.get(obj.object_id)
                 if owner_id:
-                    for det in tracked_dets:
-                        if det.track_id == owner_id:
-                            pcenter = (int((det.box[0] + det.box[2]) / 2), int((det.box[1] + det.box[3]) / 2))
-                            bcenter = (int(obj.center[0]), int(obj.center[1]))
-                            cv2.line(out, bcenter, pcenter, (255, 255, 0), 1, cv2.LINE_AA)
-                    cv2.putText(out, f"Owner #{owner_id}", (int((bcenter[0] + pcenter[0]) / 2), int((bcenter[1] + pcenter[1]) / 2)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1, cv2.LINE_AA)
+                    matching_owner = next((d for d in tracked_dets if d.track_id == owner_id), None)
+                    if matching_owner is not None:
+                        pcenter = (int((matching_owner.box[0] + matching_owner.box[2]) / 2), int((matching_owner.box[1] + matching_owner.box[3]) / 2))
+                        bcenter = (int(obj.center[0]), int(obj.center[1]))
+                        cv2.line(out, bcenter, pcenter, (255, 255, 0), 1, cv2.LINE_AA)
+                        cv2.putText(out, f"Owner #{owner_id}", (int((bcenter[0] + pcenter[0]) / 2), int((bcenter[1] + pcenter[1]) / 2)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1, cv2.LINE_AA)
 
     # 4. Top Telemetry Banner
     cv2.rectangle(out, (10, 10), (380, 75), (20, 24, 30), -1)
