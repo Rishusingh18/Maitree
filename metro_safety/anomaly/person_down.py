@@ -173,14 +173,21 @@ class PersonDownDetector:
             # Check track state or re-associate churned track
             if tid not in self.track_states:
                 # Attempt spatial-temporal re-association with recently dormant prone tracks
+                # Only associate if candidate is posture-compatible (prone), and pick closest
                 reassoc = None
-                for i, d in enumerate(self.dormant_states):
-                    if (timestamp - d["last_seen_ts"]) <= self.track_reassoc_window_sec:
-                        dist = math.hypot(foot[0] - d["last_pos"][0], foot[1] - d["last_pos"][1])
-                        if dist <= self.track_reassoc_dist_px:
-                            reassoc = d
-                            self.dormant_states.pop(i)
-                            break
+                is_cand_prone, _, _, _, _ = self._is_pose_prone(det)
+                if is_cand_prone:
+                    best_i = None
+                    best_dist = float("inf")
+                    for i, d in enumerate(self.dormant_states):
+                        if (timestamp - d["last_seen_ts"]) <= self.track_reassoc_window_sec:
+                            dist = math.hypot(foot[0] - d["last_pos"][0], foot[1] - d["last_pos"][1])
+                            if dist <= self.track_reassoc_dist_px and dist < best_dist:
+                                best_dist = dist
+                                best_i = i
+
+                    if best_i is not None:
+                        reassoc = self.dormant_states.pop(best_i)
 
                 if reassoc:
                     self.track_states[tid] = ProneTrackState(

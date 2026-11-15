@@ -91,14 +91,16 @@ def draw_hud(
         label_lines = [f"Track #{tid}"]
 
         # Prone timer
-        pd_state = anomaly_engine.person_down_detector.track_states.get(tid)
+        pd_detector = getattr(anomaly_engine, "person_down_detector", None)
+        pd_state = pd_detector.track_states.get(tid) if pd_detector and hasattr(pd_detector, "track_states") else None
         if pd_state and getattr(pd_state, "is_currently_prone", False):
             p_time = pd_state.prone_duration
             p_tag = "L2 ALERT" if p_time >= 30.0 else ("L1 NOTICE" if p_time >= 10.0 else "Monitoring")
             label_lines.append(f"Prone: {p_time:.1f}s [{p_tag}]")
 
         # Loiter timer
-        loit_state = anomaly_engine.loitering_detector.track_states.get(tid)
+        loit_detector = getattr(anomaly_engine, "loitering_detector", None)
+        loit_state = loit_detector.track_states.get(tid) if loit_detector and hasattr(loit_detector, "track_states") else None
         if loit_state:
             d_time = loit_state.dwell_duration
             d_tag = "L2" if d_time >= 60.0 else ("L1" if d_time >= 30.0 else "Normal")
@@ -111,23 +113,27 @@ def draw_hud(
             y_off -= 16
 
     # 3. Draw Luggage Objects & Owner Links
-    for obj in anomaly_engine.abandoned_object_detector.tracked_objects.values():
-        bx = obj.box.astype(int)
-        obj_color = (0, 0, 255) if obj.is_unattended else (255, 160, 50)
-        cv2.rectangle(out, (bx[0], bx[1]), (bx[2], bx[3]), obj_color, 2)
-        obj_label = f"Bag #{obj.object_id} ({obj.object_class})"
-        if obj.is_unattended:
-            obj_label += f" UNATTENDED {obj.unattended_duration:.1f}s"
-        cv2.putText(out, obj_label, (bx[0], max(15, bx[1] - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, obj_color, 1, cv2.LINE_AA)
+    ao_detector = getattr(anomaly_engine, "abandoned_object_detector", None)
+    theft_detector = getattr(anomaly_engine, "theft_detector", None)
+    if ao_detector and hasattr(ao_detector, "tracked_objects"):
+        for obj in ao_detector.tracked_objects.values():
+            bx = obj.box.astype(int)
+            obj_color = (0, 0, 255) if obj.is_unattended else (255, 160, 50)
+            cv2.rectangle(out, (bx[0], bx[1]), (bx[2], bx[3]), obj_color, 2)
+            obj_label = f"Bag #{obj.object_id} ({obj.object_class})"
+            if obj.is_unattended:
+                obj_label += f" UNATTENDED {obj.unattended_duration:.1f}s"
+            cv2.putText(out, obj_label, (bx[0], max(15, bx[1] - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, obj_color, 1, cv2.LINE_AA)
 
-        # Draw link to owner if associated
-        owner_id = anomaly_engine.theft_detector.confirmed_owners.get(obj.object_id)
-        if owner_id:
-            for det in tracked_dets:
-                if det.track_id == owner_id:
-                    pcenter = (int((det.box[0] + det.box[2]) / 2), int((det.box[1] + det.box[3]) / 2))
-                    bcenter = (int(obj.center[0]), int(obj.center[1]))
-                    cv2.line(out, bcenter, pcenter, (255, 255, 0), 1, cv2.LINE_AA)
+            # Draw link to owner if associated
+            if theft_detector and hasattr(theft_detector, "confirmed_owners"):
+                owner_id = theft_detector.confirmed_owners.get(obj.object_id)
+                if owner_id:
+                    for det in tracked_dets:
+                        if det.track_id == owner_id:
+                            pcenter = (int((det.box[0] + det.box[2]) / 2), int((det.box[1] + det.box[3]) / 2))
+                            bcenter = (int(obj.center[0]), int(obj.center[1]))
+                            cv2.line(out, bcenter, pcenter, (255, 255, 0), 1, cv2.LINE_AA)
                     cv2.putText(out, f"Owner #{owner_id}", (int((bcenter[0] + pcenter[0]) / 2), int((bcenter[1] + pcenter[1]) / 2)),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1, cv2.LINE_AA)
 

@@ -675,7 +675,7 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                             ? '⚠️ UNVERIFIED REFERENCE FRAME — OPERATOR CONFIRMATION REQUIRED'
                             : '⚠️ ZONES UNVERIFIED — CAMERA DRIFT DETECTED';
                         document.getElementById('zone-alert-body').textContent = `Drift: ${(az.drift_px||0).toFixed(1)}px | Inliers: ${az.inliers||0} | Status: ${az.status}${az.failure_reason ? ' (' + az.failure_reason + ')' : ''}`;
-                        if (zoneBtn && !isBackendDead) zoneBtn.disabled = false;
+                        if (zoneBtn && !isBackendDead && !isZoneConfirmationPending) zoneBtn.disabled = false;
                     } else if (zoneBanner) {
                         zoneBanner.style.display = 'none';
                     }
@@ -722,6 +722,17 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                         return;
                     }
 
+                    function escapeHtml(str) {
+                        if (str === null || str === undefined) return '';
+                        return String(str).replace(/[&<>'"]/g, tag => ({
+                            '&': '&amp;',
+                            '<': '&lt;',
+                            '>': '&gt;',
+                            "'": '&#39;',
+                            '"': '&quot;'
+                        }[tag] || tag));
+                    }
+
                     let html = '';
                     events.slice(0, 20).forEach(ev => {
                         let sevBadge = 'badge-secure';
@@ -746,13 +757,13 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                         const snapThumb = snapSrc ? `<img src="${snapSrc}" style="width:24px;height:24px;object-fit:cover;border-radius:3px;vertical-align:middle;margin-right:4px;" title="Object crop"/>` : '';
 
                         html += `<tr>
-                            <td>${timeStr}</td>
-                            <td>#${ev.track_id}</td>
-                            <td>${demoBadge}${anomBadge}${snapThumb}<strong>${cleanType}</strong></td>
-                            <td>${ev.zone}</td>
-                            <td><span class="badge ${sevBadge}">${ev.severity}</span></td>
-                            <td>${conf}</td>
-                            <td>${actionStr}</td>
+                            <td>${escapeHtml(timeStr)}</td>
+                            <td>#${escapeHtml(ev.track_id)}</td>
+                            <td>${demoBadge}${anomBadge}${snapThumb}<strong>${escapeHtml(cleanType)}</strong></td>
+                            <td>${escapeHtml(ev.zone)}</td>
+                            <td><span class="badge ${sevBadge}">${escapeHtml(ev.severity)}</span></td>
+                            <td>${escapeHtml(conf)}</td>
+                            <td>${escapeHtml(actionStr)}</td>
                         </tr>`;
                     });
                     tbody.innerHTML = html;
@@ -788,13 +799,16 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
 
         function confirmZoneAlignment() {
             const btn = document.getElementById('btn-confirm-zones');
+            isZoneConfirmationPending = true;
             if (btn) btn.disabled = true;
             apiPost('/api/zones/confirm')
                 .then(res => {
+                    isZoneConfirmationPending = false;
                     console.log('Zone alignment confirmed:', res);
                     updateTelemetry();
                 })
                 .catch(err => {
+                    isZoneConfirmationPending = false;
                     showErrorToast('Zone Confirmation Failed: ' + (err.message || err));
                     if (btn && !isBackendDead) btn.disabled = false;
                 });
@@ -903,7 +917,9 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                                     line_str = line.strip()
                                     if line_str:
                                         disk_ev = json.loads(line_str)
-                                        if active_hub.producer_pid != os.getpid():
+                                        prod_pid = disk_ev.get("producer_pid") or getattr(active_hub, "producer_pid", None)
+                                        is_prod_event = bool(disk_ev.get("producer_role") or (prod_pid is not None and disk_ev.get("session_id")))
+                                        if is_prod_event or active_hub.producer_pid != os.getpid():
                                             yield f"data: {json.dumps(disk_ev)}\n\n"
                                             idle_ticks = 0
                         except Exception:

@@ -290,7 +290,14 @@ def calibrate_zones(
                 with open(tmp_cfg_path, "w", encoding="utf-8") as f:
                     yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
 
-                # 4. Atomic publish with rollback backup
+                # 4. Write versioned reference artifacts before updating config
+                ts_str = time.strftime("%Y%m%d_%H%M%S")
+                versioned_img = ref_dir / f"{ref_img_path.stem}_{ts_str}{ref_img_path.suffix}"
+                versioned_poly = ref_dir / f"{ref_poly_path.stem}_{ts_str}{ref_poly_path.suffix}"
+                shutil.copy2(str(tmp_img_path), str(versioned_img))
+                shutil.copy2(str(tmp_poly_path), str(versioned_poly))
+
+                # Atomic publish with rollback backup
                 for target in [ref_img_path, ref_poly_path, cfg_file]:
                     if target.exists():
                         bak = target.with_name(f"{target.name}.orig")

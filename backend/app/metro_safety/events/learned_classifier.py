@@ -160,6 +160,13 @@ class LearnedEventClassifier:
         for det in tracked_detections:
             if det.track_id is None:
                 continue
+
+            # Strict zone semantics: ignore detections outside monitored zones or in 'ignore' zone
+            foot = det.foot_anchor
+            zone = zone_manager.get_zone_for_point(foot)
+            if zone in ["outside", "ignore"]:
+                continue
+
             tid = det.track_id
             active_ids.add(tid)
 
@@ -174,7 +181,7 @@ class LearnedEventClassifier:
                 feats = FeatureExtractor.extract_sequence_features(window, self.window_size)
                 probs = self.model.predict_proba([feats])[0]
                 pred_idx = int(np.argmax(probs))
-                conf = float(probs[pred_idx])
+                conf = min(0.99, float(probs[pred_idx]))
                 predicted_label = self.CLASSES[pred_idx]
 
                 if predicted_label != "NORMAL" and conf > 0.60:

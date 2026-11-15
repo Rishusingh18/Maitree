@@ -27,8 +27,17 @@ def do_segments_intersect(p1: Tuple[float, float], p2: Tuple[float, float],
 
 
 def is_polygon_self_intersecting(pts: List[List[float]]) -> Tuple[bool, Optional[Tuple[int, int]]]:
-    """Check if any non-adjacent edges in the polygon intersect (bowtie / self-intersecting)."""
+    """Check if any non-adjacent edges in the polygon intersect (bowtie / self-intersecting),
+    or if the polygon contains duplicate/repeated vertices."""
     n = len(pts)
+    if n < 3:
+        return False, None
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if abs(pts[i][0] - pts[j][0]) < 1e-6 and abs(pts[i][1] - pts[j][1]) < 1e-6:
+                return True, (i, j)
+
     if n < 4:
         return False, None
 
@@ -92,6 +101,10 @@ class Zone:
         self.polygon = np.array(polygon, dtype=np.int32)
         if len(self.polygon.shape) == 2:
             self.polygon = self.polygon.reshape((-1, 1, 2))
+        int_area = abs(cv2.contourArea(self.polygon))
+        if int_area < 1.0:
+            logger.error(f"[Zone Error] Zone '{name}' integer contour area collapsed to {int_area} px^2")
+            raise ValueError(f"Zone '{name}' integer contour area collapsed to {int_area} px^2")
 
     def contains_point(self, point: Tuple[float, float]) -> bool:
         """Check if a 2D point (x, y) lies inside or on the boundary of the polygon."""
@@ -142,12 +155,13 @@ class ZoneManager:
         If point is in 'ignore' zone, returns 'ignore'.
         If point is not inside any defined zone, returns 'outside'.
         """
+        zones_snap = self.zones
         for name in self.CHECK_ORDER:
-            if name in self.zones and self.zones[name].contains_point(point):
+            if name in zones_snap and zones_snap[name].contains_point(point):
                 return name
 
         # Check any custom zones
-        for name, zone in self.zones.items():
+        for name, zone in zones_snap.items():
             if name not in self.CHECK_ORDER and zone.contains_point(point):
                 return name
 

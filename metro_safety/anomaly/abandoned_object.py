@@ -46,6 +46,8 @@ class TrackedObject:
     positions: List[Tuple[float, float, float]] = field(default_factory=list) # (x, y, ts)
     snapshot_path: Optional[str] = None
     alerted: bool = False
+    l2_trusted_alerted: bool = False
+    is_startup_object: bool = False
 
 
 class AbandonedObjectDetector:
@@ -77,7 +79,8 @@ class AbandonedObjectDetector:
         self.cached_raw_detections: List[Dict[str, Any]] = []
         self._last_inference_frame: int = -1
         self._last_inference_ts: float = 0.0
-        self._last_success_ts: float = 0.0
+        self._last_success_ts: Optional[float] = None
+        self._frame_count: int = 0
 
         if self._obj_detector is None:
             self._init_detector()
@@ -115,8 +118,8 @@ class AbandonedObjectDetector:
             (detections, is_fresh)
         """
         now = timestamp if timestamp is not None else time.time()
-        # Bound cached detection reuse: expire after 2.5s from last successful inference
-        if self._last_success_ts > 0 and (now - self._last_success_ts) > 2.5:
+        # Bound cached detection reuse: expire after 2.5s from last successful inference (timestamp 0 is valid)
+        if self._last_success_ts is not None and (now - self._last_success_ts) > 2.5:
             self.cached_raw_detections = []
 
         should_run = (self._last_inference_frame < 0) or ((frame_idx - self._last_inference_frame) >= self.detect_interval_frames)
@@ -181,8 +184,8 @@ class AbandonedObjectDetector:
                 if oid in matched_obj_ids:
                     continue
                 dt = max(0.01, timestamp - tobj.last_seen_ts)
-                # Dynamic matching radius accounting for elapsed time and velocity
-                match_radius = max(60.0, min(200.0, 60.0 + tobj.velocity * dt * 1.5))
+                # Dynamic matching radius accounting for elapsed time, velocity, and snatch displacement
+                match_radius = max(80.0, min(250.0, 80.0 + max(tobj.velocity, 80.0) * dt * 1.5))
                 d = math.hypot(cx - tobj.center[0], cy - tobj.center[1])
                 if d < match_radius and d < min_dist:
                     min_dist = d
@@ -209,6 +212,7 @@ class AbandonedObjectDetector:
             else:
                 # New bag
                 new_id = self._next_object_id()
+                is_startup = (self._frame_count <= self.detect_interval_frames * 2)
                 self.tracked_objects[new_id] = TrackedObject(
                     object_id=new_id,
                     object_class=det["class"],
@@ -218,7 +222,8 @@ class AbandonedObjectDetector:
                     last_seen_ts=timestamp,
                     center=(cx, cy),
                     zone=zone,
-                    positions=[(cx, cy, timestamp)]
+                    positions=[(cx, cy, timestamp)],
+                    is_startup_object=is_startup
                 )
                 matched_obj_ids.add(new_id)
 
@@ -236,7 +241,9 @@ class AbandonedObjectDetector:
         zone_manager: ZoneManager,
         train_state: str = "ABSENT",
         synthetic_objects: Optional[List[Dict[str, Any]]] = None,
-        alert_enabled: bool = True
+        alert_enabled: bool = True,
+        camera_motion: bool = False,
+        zones_unverified: bool = False
     ) -> List[SafetyEvent]:
         """Evaluate unattended bags against tracked persons."""
         events: List[SafetyEvent] = []
@@ -290,9 +297,10 @@ class AbandonedObjectDetector:
                 obj.unattended_start_ts = timestamp
                 obj.unattended_duration = 0.0
                 obj.alerted = False
+                obj.l2_trusted_alerted = False
             else:
                 # No person nearby: bag is unattended
-                if not obj.owner_seen_near and not self.alert_startup_objects:
+                if obj.is_startup_object and not obj.owner_seen_near and not self.alert_startup_objects:
                     # Ignore bags present at startup that never had an owner near them
                     continue
 
@@ -312,6 +320,12 @@ class AbandonedObjectDetector:
                 if obj.unattended_duration >= self.unattended_sec:
                     if not alert_enabled:
                         continue
+                    is_low_trust = camera_motion or zones_unverified
+                    if obj.alerted and (obj.l2_trusted_alerted or is_low_trust):
+                        continue
+                    obj.alerted = True
+                    if not is_low_trust:
+                        obj.l2_trusted_alerted = True
                     # Capture snapshot crop if frame is available
                     if frame is not None and frame.size > 0 and not obj.snapshot_path:
                         try:

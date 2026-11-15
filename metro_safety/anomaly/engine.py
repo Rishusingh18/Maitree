@@ -47,12 +47,12 @@ class AnomalyEngine:
         self.person_down_detector = PersonDownDetector(
             prone_t1_sec=pd_cfg.get("prone_seconds_l1", 10.0),
             prone_t2_sec=pd_cfg.get("prone_seconds_l2", 30.0),
-            horizontal_torso_angle_deg=pd_cfg.get("horizontal_torso_angle_deg", 35.0),
+            horizontal_torso_angle_deg=pd_cfg.get("horizontal_torso_angle_deg", pd_cfg.get("angle_threshold_deg", 35.0)),
             max_head_hip_y_diff_px=pd_cfg.get("max_head_hip_y_diff_px", 45.0),
             min_aspect_ratio=pd_cfg.get("aspect_ratio_threshold", 1.15),
             max_motion_energy=pd_cfg.get("motion_energy_threshold", 4.0),
             track_reassoc_window_sec=pd_cfg.get("reassociation_window_sec", 3.0),
-            ignore_bench_lying=pd_cfg.get("ignore_bench_lying", True)
+            ignore_bench_lying=pd_cfg.get("ignore_bench_lying", pd_cfg.get("bench_lying_flag", True))
         )
 
         # 2. Loitering / Dwell
@@ -62,7 +62,8 @@ class AnomalyEngine:
             radius_px=loit_cfg.get("anchor_radius_px", 70.0),
             dwell_t1_sec=loit_cfg.get("dwell_seconds_l1", 30.0),
             dwell_t2_sec=loit_cfg.get("dwell_seconds_l2", 60.0),
-            train_suppression=loit_cfg.get("suppress_on_train", True)
+            train_suppression=loit_cfg.get("suppress_on_train", True),
+            monitored_zones=loit_cfg.get("monitored_zones", ["platform", "yellow_band", "danger_zone"])
         )
 
         # 3. Abandoned Object (Decimated bag detection)
@@ -215,6 +216,10 @@ class AnomalyEngine:
             emitted_events.extend(snatch_events)
 
         # 5. STG-NF Normalizing Flows Pose Anomaly
+        if self.stg_evaluator is not None:
+            active_track_ids = {det.track_id for det in person_detections if det.track_id is not None}
+            self.stg_evaluator.prune_track_buffers(active_track_ids)
+
         if self.stg_enabled and self.stg_evaluator is not None:
             for det in person_detections:
                 if det.track_id is not None and det.keypoints is not None:
@@ -253,26 +258,31 @@ class AnomalyEngine:
                 if (now - v[0]) <= self.dedup_cooldown_sec * 2.0
             }
 
-        # Deduplicate and apply cooldowns with severity escalation bypass
+        # Deduplicate and apply cooldowns with severity escalation & trust recovery bypass
         final_events: List[SafetyEvent] = []
         for ev in emitted_events:
             ev.metadata["is_anomaly"] = True
+            setattr(ev, "is_anomaly", True)
             if "disclaimer" not in ev.metadata:
                 ev.metadata["disclaimer"] = "operator welfare review"
 
             key = (str(ev.track_id), ev.event_type.value)
             sev = ev.metadata.get("severity_cap", ev.metadata.get("severity_code", "L1"))
+            is_low_trust = bool(camera_motion or zones_unverified or ev.metadata.get("low_trust", False))
             cached = self._dedup_cache.get(key)
             should_emit = False
             if cached is None:
                 should_emit = True
             else:
-                last_ts, last_sev = cached
-                if (now - last_ts) >= self.dedup_cooldown_sec or (sev == "L2" and last_sev == "L1"):
+                last_ts = cached[0]
+                last_sev = cached[1]
+                last_low_trust = cached[2] if len(cached) >= 3 else False
+                trust_upgraded = (not is_low_trust and last_low_trust and sev == "L2")
+                if (now - last_ts) >= self.dedup_cooldown_sec or (sev == "L2" and last_sev == "L1") or trust_upgraded:
                     should_emit = True
 
             if should_emit:
-                self._dedup_cache[key] = (now, sev)
+                self._dedup_cache[key] = (now, sev, is_low_trust)
                 final_events.append(ev)
 
         return final_events

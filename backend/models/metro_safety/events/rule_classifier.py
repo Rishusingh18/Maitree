@@ -355,9 +355,16 @@ class RuleBasedEventClassifier:
                 if self.track_machines[tid].fall_motion_induced:
                     self.track_machines[tid].confirmed_fall = False
                     self.track_machines[tid].fall_motion_induced = False
+                    self.track_machines[tid].positive_drop_frames = 0
+                    self.track_machines[tid].drop_deltas = []
                 if self.track_machines[tid].jump_motion_induced:
                     self.track_machines[tid].confirmed_jump = False
                     self.track_machines[tid].jump_motion_induced = False
+                    self.track_machines[tid].positive_jump_frames = 0
+                    self.track_machines[tid].jump_deltas = []
+
+            pre_fall = self.track_machines[tid].confirmed_fall
+            pre_jump = self.track_machines[tid].confirmed_jump
 
             ev = self.track_machines[tid].update(
                 frame_idx=frame_idx,
@@ -371,9 +378,9 @@ class RuleBasedEventClassifier:
                 ev.camera_motion = bool(camera_motion)
                 ev.motion_reason = str(motion_reason)
                 if camera_motion:
-                    if self.track_machines[tid].confirmed_fall:
+                    if self.track_machines[tid].confirmed_fall and not pre_fall:
                         self.track_machines[tid].fall_motion_induced = True
-                    if self.track_machines[tid].confirmed_jump:
+                    if self.track_machines[tid].confirmed_jump and not pre_jump:
                         self.track_machines[tid].jump_motion_induced = True
                 events.append(ev)
 

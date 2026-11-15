@@ -142,9 +142,17 @@ async def api_train_state(request: Request, authorized: bool = Depends(get_api_k
     try:
         body = await request.json()
     except Exception:
-        body = {}
-    state = body.get("state", "ABSENT") if isinstance(body, dict) else "ABSENT"
-    return JSONResponse(hub.set_train_state(str(state)))
+        body = None
+    if not isinstance(body, dict) or "state" not in body or not body["state"]:
+        return JSONResponse({"status": "error", "message": "Missing or invalid train state in request body"}, status_code=400)
+    from metro_safety.perception.train_state import TrainState
+    state_str = str(body["state"]).strip()
+    try:
+        parsed_state = TrainState.from_str(state_str)
+    except ValueError:
+        return JSONResponse({"status": "error", "message": f"Invalid train state value: {state_str}"}, status_code=400)
+    platform_id = body.get("platform_id")
+    return JSONResponse(hub.set_train_state(parsed_state.value, platform_id=platform_id))
 
 @app.get("/api/snapshot", tags=["Live Stream"])
 def get_snapshot():

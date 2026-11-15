@@ -240,12 +240,18 @@ class AdaptiveZoneTracker:
             self._pending_frame = None
             self._pending_boxes = []
             self._recovery_start_time = None
+            self.proposed_zones = None
+            self.proposed_homography = None
             if is_demo:
                 self.status = AlignmentStatus.DISABLED_DEMO
             else:
                 if self.status == AlignmentStatus.DISABLED_DEMO:
-                    # Reset registration state on switch back to live
-                    self.status = AlignmentStatus.ALIGNED
+                    if not self.ref_path.exists() or self.reference_frame is None:
+                        self.status = AlignmentStatus.UNVERIFIED_REFERENCE
+                        self.requires_operator_confirmation = True
+                    else:
+                        self.status = AlignmentStatus.ALIGNED
+                        self.requires_operator_confirmation = False
                     self.consecutive_bad_estimates = 0
                     self.consecutive_good_frames = 0
                     self.current_drift_px = 0.0
@@ -308,6 +314,9 @@ class AdaptiveZoneTracker:
             reg_result = self._register_direct(frame, boxes, ts)
             dt_ms = (time.perf_counter() - t0) * 1000.0
             reg_result.reg_time_ms = round(dt_ms, 2)
+            if dt_ms > self.time_budget_ms:
+                reg_result.is_valid = False
+                reg_result.failure_reason = f"Registration exceeded time budget ({dt_ms:.1f}ms > {self.time_budget_ms}ms)"
 
             with self._lock:
                 self._apply_result_with_safety_limits(reg_result, ts, generation=job_gen)
@@ -529,14 +538,15 @@ class AdaptiveZoneTracker:
             return False, f"Excessive perspective distortion ({abs(H[2, 0]):.5f}, {abs(H[2, 1]):.5f})", {"scale": scale}
 
         # Inlier count
-        inlier_pts = dst_pts[inlier_mask.ravel() == 1]
-        if len(inlier_pts) < self.min_inliers:
-            return False, f"Too few inliers ({len(inlier_pts)} < {self.min_inliers})", {"scale": scale}
+        raw_inliers = dst_pts[inlier_mask.ravel() == 1]
+        unique_inliers = np.unique(raw_inliers, axis=0) if len(raw_inliers) > 0 else raw_inliers
+        if len(raw_inliers) < self.min_inliers:
+            return False, f"Too few inliers ({len(raw_inliers)} < {self.min_inliers})", {"scale": scale}
 
         # Quadrant spread: Inliers must spread across at least 3 of 4 quadrants
         cx, cy = w / 2.0, h / 2.0
         q_counts = [0, 0, 0, 0]  # TL, TR, BL, BR
-        for pt in inlier_pts:
+        for pt in unique_inliers:
             x, y = pt[0], pt[1]
             if x < cx and y < cy:
                 q_counts[0] += 1
@@ -552,8 +562,8 @@ class AdaptiveZoneTracker:
             return False, f"Inliers clustered in {active_quadrants}/4 quadrants (must cover >= 3)", {"scale": scale}
 
         # False lock on repetitive pattern: check spatial variance
-        std_x = float(np.std(inlier_pts[:, 0]))
-        std_y = float(np.std(inlier_pts[:, 1]))
+        std_x = float(np.std(unique_inliers[:, 0])) if len(unique_inliers) > 0 else 0.0
+        std_y = float(np.std(unique_inliers[:, 1])) if len(unique_inliers) > 0 else 0.0
         if std_x < 25.0 or std_y < 25.0:
             return False, f"Inliers clustered on narrow line/patch (std_x={std_x:.1f}, std_y={std_y:.1f})", {"scale": scale}
 
@@ -609,6 +619,7 @@ class AdaptiveZoneTracker:
             if self.consecutive_bad_estimates >= self.max_consecutive_bad:
                 prev_status = self.status
                 self.status = AlignmentStatus.ZONES_UNVERIFIED
+                self.requires_operator_confirmation = True
                 if prev_status != AlignmentStatus.ZONES_UNVERIFIED:
                     self._log_audit_change(
                         event_type="ZONES_UNVERIFIED",
@@ -636,11 +647,15 @@ class AdaptiveZoneTracker:
             )
             return
 
+        # If operator confirmation is currently required, do not auto-clear proposals or auto-apply updates
+        if self.requires_operator_confirmation:
+            logger.debug("[AdaptiveZones] Operator confirmation required; skipping auto-update.")
+            return
+
         # Camera returned to valid drift: refresh or clear stale proposals
-        if result.drift_px <= self.max_drift_px:
-            self.drift_breached = False
-            self.proposed_zones = None
-            self.proposed_homography = None
+        self.drift_breached = False
+        self.proposed_zones = None
+        self.proposed_homography = None
 
         # Check max correction rate per second
         dt = max(0.01, timestamp - self.last_correction_time)
@@ -683,6 +698,7 @@ class AdaptiveZoneTracker:
                 self._recovery_start_time = None
                 if self.consecutive_bad_estimates >= self.max_consecutive_bad:
                     self.status = AlignmentStatus.ZONES_UNVERIFIED
+                    self.requires_operator_confirmation = True
                 return
 
         # Atomic zone update in ZoneManager
@@ -752,7 +768,9 @@ class AdaptiveZoneTracker:
                         return False, f"Proposed zone '{zn}' is geometrically invalid ({m}). Re-run calibration."
 
                 self.zone_version += 1
-                self.zone_manager.update_zones(self.proposed_zones, version=self.zone_version)
+                success = self.zone_manager.update_zones(self.proposed_zones, version=self.zone_version)
+                if not success:
+                    return False, "Failed to apply proposed zones in ZoneManager update_zones."
                 self.current_zones = copy.deepcopy(self.proposed_zones)
                 self.last_good_zones = copy.deepcopy(self.proposed_zones)
                 self.accepted_alignment_zones = copy.deepcopy(self.proposed_zones)
@@ -766,7 +784,7 @@ class AdaptiveZoneTracker:
             self.requires_operator_confirmation = False
             self.consecutive_bad_estimates = 0
             self.consecutive_good_frames = 100
-            self._recovery_start_time = time.time()
+            self._recovery_start_time = None
 
             self._log_audit_change(
                 event_type="OPERATOR_CONFIRMED_ALIGNMENT",

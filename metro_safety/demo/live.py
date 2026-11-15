@@ -13,6 +13,7 @@ Usage:
 """
 import os
 import sys
+import json
 import time
 import argparse
 import logging
@@ -244,6 +245,43 @@ def run_live_pipeline(
         while True:
             t_start = time.perf_counter()
 
+            # Poll cross-process operator commands before frame read so commands process during camera outages
+            for cmd_path in list(Path("data/cache").glob("zone_confirm*.cmd")):
+                try:
+                    cmd_content = cmd_path.read_text(encoding="utf-8")
+                    cmd_data = json.loads(cmd_content)
+                    cmd_path.unlink()
+                    req_id = cmd_data.get("req_id")
+                    cmd_ts = float(cmd_data.get("timestamp", 0))
+                    if (time.time() - cmd_ts) <= 2.0:
+                        c_ok, c_msg = zone_tracker.confirm_alignment()
+                        resp_path = Path(f"data/cache/zone_confirm_{req_id}.resp") if req_id else Path("data/cache/zone_confirm.resp")
+                        resp_path.write_text(json.dumps({
+                            "req_id": req_id,
+                            "status": "ok" if c_ok else "error",
+                            "message": c_msg
+                        }), encoding="utf-8")
+                    else:
+                        logger.warning(f"[Live] Discarding timed-out zone confirmation command: req_id={req_id}")
+                except Exception:
+                    pass
+
+            # Check for cross-process buzzer control command (acknowledge / mute)
+            buzzer_cmd = Path("data/cache/buzzer_control.cmd")
+            if buzzer_cmd.exists():
+                try:
+                    b_content = buzzer_cmd.read_text(encoding="utf-8")
+                    b_data = json.loads(b_content)
+                    buzzer_cmd.unlink()
+                    if (time.time() - float(b_data.get("timestamp", 0))) <= 5.0:
+                        act = b_data.get("action")
+                        if act == "acknowledge" and buzzer:
+                            buzzer.acknowledge()
+                        elif act == "toggle_mute" and buzzer:
+                            buzzer.toggle_mute()
+                except Exception:
+                    pass
+
             try:
                 # 1. Capture Stage
                 t0_cap = time.perf_counter()
@@ -257,6 +295,7 @@ def run_live_pipeline(
                         print(f"[Live] Video file reached terminal EOF after {frame_idx} frames. Stopping.")
                         break
                     hub.update_frame(None, is_online=False, status_msg=frame_source.source_name)
+                    hub.update_telemetry(fps=0.0, latency_ms=0.0, pipeline_stages={}, is_online=False)
                     time.sleep(0.04)
                     continue
 
@@ -326,44 +365,6 @@ def run_live_pipeline(
                 if frame_idx == 1:
                     zone_tracker.on_first_frame(frame)
                 zone_tracker.set_demo_mode(is_demo)
-
-                # Check for cross-process zone confirmation command
-                cmd_path = Path("data/cache/zone_confirm.cmd")
-                if cmd_path.exists():
-                    try:
-                        cmd_content = cmd_path.read_text(encoding="utf-8")
-                        cmd_data = json.loads(cmd_content)
-                        cmd_path.unlink()
-                        req_id = cmd_data.get("req_id")
-                        cmd_ts = float(cmd_data.get("timestamp", 0))
-                        if (time.time() - cmd_ts) <= 2.0:
-                            c_ok, c_msg = zone_tracker.confirm_alignment()
-                            resp_path = Path("data/cache/zone_confirm.resp")
-                            resp_path.write_text(json.dumps({
-                                "req_id": req_id,
-                                "status": "ok" if c_ok else "error",
-                                "message": c_msg
-                            }), encoding="utf-8")
-                        else:
-                            logger.warning(f"[Live] Discarding timed-out zone confirmation command: req_id={req_id}")
-                    except Exception:
-                        pass
-
-                # Check for cross-process buzzer control command (acknowledge / mute)
-                buzzer_cmd = Path("data/cache/buzzer_control.cmd")
-                if buzzer_cmd.exists():
-                    try:
-                        b_content = buzzer_cmd.read_text(encoding="utf-8")
-                        b_data = json.loads(b_content)
-                        buzzer_cmd.unlink()
-                        if (time.time() - float(b_data.get("timestamp", 0))) <= 5.0:
-                            act = b_data.get("action")
-                            if act == "acknowledge" and buzzer:
-                                buzzer.acknowledge()
-                            elif act == "toggle_mute" and buzzer:
-                                buzzer.toggle_mute()
-                    except Exception:
-                        pass
 
                 person_boxes = [trk.box for trk in tracks] if tracks else [d.box for d in detections]
                 zone_tracker.submit_frame(frame.copy(), frame_idx, person_boxes, frame_ts)
@@ -456,7 +457,7 @@ def run_live_pipeline(
                         )
 
                         # Trigger Hardware Buzzer (Distress gesture is silent!)
-                        if sev != "DISTRESS":
+                        if getattr(dec, "buzzer_active", True) and sev != "DISTRESS":
                             try:
                                 buzzer.trigger(sev)
                             except Exception as b_trig_err:

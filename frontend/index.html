@@ -3576,8 +3576,13 @@
           return r.json();
         })
         .then(res => {
-          acknowledgeAlert(`✓ Zone Confirmation: ${res.message || 'Zones confirmed'}`);
-          pollTelemetry();
+          if (res.status === 'ok') {
+            acknowledgeAlert(`✓ Zone Confirmation: ${res.message || 'Zones confirmed'}`);
+            pollTelemetry();
+          } else {
+            acknowledgeAlert(`✗ Zone Confirmation Failed: ${res.message || 'Error confirming zones'}`);
+            if (btn) btn.disabled = false;
+          }
         })
         .catch(err => {
           acknowledgeAlert(`✗ Zone Confirmation Failed: ${err.message || err}`);

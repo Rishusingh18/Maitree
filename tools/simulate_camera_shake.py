@@ -51,6 +51,19 @@ def generate_camera_shake(
     records = []
     frame_idx = 0
 
+    baseline_polys = {
+        "platform": [[0.1 * w, 0.2 * h], [0.47 * w, 0.2 * h], [0.47 * w, 0.9 * h], [0.1 * w, 0.9 * h]],
+        "yellow_band": [[0.47 * w, 0.2 * h], [0.53 * w, 0.2 * h], [0.53 * w, 0.9 * h], [0.47 * w, 0.9 * h]],
+        "track_bed": [[0.53 * w, 0.2 * h], [0.9 * w, 0.2 * h], [0.9 * w, 0.9 * h], [0.53 * w, 0.9 * h]]
+    }
+
+    poly_pts_list = []
+    for poly in baseline_polys.values():
+        for pt in poly:
+            poly_pts_list.append([float(pt[0]), float(pt[1])])
+    ref_poly_pts = np.array(poly_pts_list, dtype=np.float32).reshape(-1, 1, 2)
+    ref_first_pts = None
+
     # Base synthetic pattern across all 4 quadrants if video not opened
     base_frame = np.zeros((h, w, 3), dtype=np.uint8)
     for y in range(h):
@@ -106,12 +119,17 @@ def generate_camera_shake(
             warped = cv2.warpAffine(frame, M, (w, h), borderMode=cv2.BORDER_REFLECT_101)
             writer.write(warped)
 
+            pts_warped = cv2.transform(ref_poly_pts, M).reshape(-1, 2)
+            if ref_first_pts is None:
+                ref_first_pts = pts_warped.copy()
+            mean_vertex_disp = float(np.mean(np.linalg.norm(pts_warped - ref_first_pts, axis=1)))
+
             records.append({
                 "frame": frame_idx,
                 "dx": round(dx, 4),
                 "dy": round(dy, 4),
                 "dtheta_deg": round(dtheta, 4),
-                "displacement_px": round(math.hypot(dx, dy), 4)
+                "displacement_px": round(mean_vertex_disp, 4)
             })
             frame_idx += 1
     finally:

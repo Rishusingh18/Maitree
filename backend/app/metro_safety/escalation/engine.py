@@ -67,9 +67,14 @@ class EscalationEngine:
 
     def _activate_buzzer(self, pattern: str):
         # Prevent overriding continuous emergency siren with pulsed warning
-        # Only preserve CONTINUOUS_HIGH if the buzzer is actively sounding an L3 continuous siren
-        has_critical_siren = getattr(self.buzzer, "_current_pattern", None) == "L3"
-        if has_critical_siren and pattern in ["PULSED", "PULSED_FAST"]:
+        current_pat = getattr(self.buzzer, "_current_pattern", None)
+        if current_pat is None and hasattr(self.buzzer, "_patterns"):
+            current_pat = getattr(self.buzzer, "_patterns", {}).get(self.platform_id, "OFF")
+        has_critical_siren = (
+            self.buzzer.is_active(self.platform_id)
+            and current_pat in ["L3", "CONTINUOUS_HIGH"]
+        )
+        if has_critical_siren and pattern in ["PULSED", "PULSED_FAST", "L1", "L2"]:
             return  # keep CONTINUOUS_HIGH active
         self.buzzer.activate(self.platform_id, pattern=pattern)
 
@@ -200,7 +205,7 @@ class EscalationEngine:
 
             if ev_type == EventType.PERSON_DOWN:
                 dur = event.metadata.get("prone_duration_sec", event.metadata.get("duration_sec", 0.0))
-                if requested_severity == "L1" or dur < 25.0 or is_low_trust:
+                if requested_severity == "L1" or is_low_trust:
                     severity = SeverityLevel.L1
                     action_msg = f"WELFARE NOTICE: Person lying down ({dur:.1f}s) - operator review."
                     buzzer_active = False
@@ -210,12 +215,13 @@ class EscalationEngine:
                     action_msg = f"WELFARE ALERT: Person unresponsive on ground ({dur:.1f}s) - check passenger."
                     buzzer_active = True
                     cr_alert = True
-                    self.active_audible_hazards[event.track_id] = ev_type
+                    if self.active_audible_hazards.get(event.track_id) not in [EventType.ACCIDENTAL_FALL, EventType.DELIBERATE_JUMP]:
+                        self.active_audible_hazards[event.track_id] = ev_type
                     self._activate_buzzer("PULSED")
 
             elif ev_type == EventType.LOITERING:
                 dwell = event.metadata.get("dwell_time_sec", event.metadata.get("duration_sec", 0.0))
-                if requested_severity == "L1" or dwell < 45.0 or is_low_trust:
+                if requested_severity == "L1" or is_low_trust:
                     severity = SeverityLevel.L1
                     action_msg = f"MONITOR NOTICE: Extended dwell in {event.zone} ({dwell:.1f}s)."
                     buzzer_active = False
@@ -225,7 +231,8 @@ class EscalationEngine:
                     action_msg = f"MONITOR ALERT: Sustained loitering in {event.zone} ({dwell:.1f}s)."
                     buzzer_active = True
                     cr_alert = True
-                    self.active_audible_hazards[event.track_id] = ev_type
+                    if self.active_audible_hazards.get(event.track_id) not in [EventType.ACCIDENTAL_FALL, EventType.DELIBERATE_JUMP]:
+                        self.active_audible_hazards[event.track_id] = ev_type
                     self._activate_buzzer("PULSED")
 
             elif ev_type == EventType.ABANDONED_OBJECT:

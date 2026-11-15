@@ -36,12 +36,14 @@ class LoiteringDetector:
         radius_px: float = 70.0,
         dwell_t1_sec: float = 30.0,
         dwell_t2_sec: float = 60.0,
-        train_suppression: bool = True
+        train_suppression: bool = True,
+        monitored_zones: Optional[List[str]] = None
     ):
         self.radius_px = radius_px
         self.dwell_t1_sec = dwell_t1_sec
         self.dwell_t2_sec = dwell_t2_sec
         self.train_suppression = train_suppression
+        self.monitored_zones = monitored_zones or ["platform", "yellow_band", "danger_zone"]
 
         self.track_states: Dict[int, DwellTrackState] = {}
 
@@ -80,7 +82,11 @@ class LoiteringDetector:
             foot = det.foot_anchor
             zone = zone_manager.get_zone_for_point(foot)
 
-            # Only monitor platform and buffer/danger zones; ignore seating or outside
+            # Only monitor configured monitored_zones; reset dwell and ignore others
+            if self.monitored_zones and zone not in self.monitored_zones:
+                if tid in self.track_states:
+                    del self.track_states[tid]
+                continue
             if zone in ["outside", "ignore", "UNKNOWN"]:
                 if tid in self.track_states:
                     del self.track_states[tid]
@@ -176,8 +182,8 @@ class LoiteringDetector:
                 st.l2_alerted = False
                 st.l2_trusted_alerted = False
 
-        # Prune inactive tracks
-        dead_tids = [tid for tid in self.track_states if tid not in current_tids]
+        # Prune inactive tracks with a bounded timeout (2.5s) to preserve continuity across occasional missed detections
+        dead_tids = [tid for tid, st in self.track_states.items() if tid not in current_tids and (timestamp - st.last_seen_ts) > 2.5]
         for dead_id in dead_tids:
             del self.track_states[dead_id]
 

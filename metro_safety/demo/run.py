@@ -140,6 +140,8 @@ def run_pipeline(
         buzzer=buzzer
     )
     train_state = TrainState(train_state_val)
+    if not hasattr(hub, "train_state_provider") or hub.train_state_provider is None:
+        hub.set_hardware_components(train_state_provider=SimulatedTrainStateProvider(default_platform_id=cfg["system"]["platform_id"]))
     if hasattr(hub, "train_state_provider") and hub.train_state_provider:
         hub.train_state_provider.set_state(train_state, platform_id=cfg["system"]["platform_id"])
     hub.set_train_state(train_state.value, platform_id=cfg["system"]["platform_id"])

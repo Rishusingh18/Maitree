@@ -47,9 +47,13 @@ class STGNFEvaluator:
             args = ckpt["args"]
 
             pose_shape = (2, self.window_len, 18)
+            hidden_dim = getattr(args, "hidden_dim", getattr(args, "model_hidden_dim", 0))
+            strategy = getattr(args, "strategy", getattr(args, "adj_strategy", "uniform"))
+            max_hops = getattr(args, "max_hop", getattr(args, "max_hops", 8))
+
             model = STG_NF(
                 pose_shape=pose_shape,
-                hidden_channels=getattr(args, "hidden_dim", 0),
+                hidden_channels=hidden_dim,
                 K=getattr(args, "K", 8),
                 L=getattr(args, "L", 1),
                 actnorm_scale=1.0,
@@ -60,12 +64,15 @@ class STGNFEvaluator:
                 R=getattr(args, "R", 3.0),
                 edge_importance=getattr(args, "edge_importance", False),
                 temporal_kernel_size=getattr(args, "temporal_kernel", None),
-                strategy=getattr(args, "strategy", "uniform"),
-                max_hops=getattr(args, "max_hop", 8),
+                strategy=strategy,
+                max_hops=max_hops,
                 device=self.device
             )
 
-            model.load_state_dict(ckpt["state_dict"], strict=False)
+            incompatible = model.load_state_dict(ckpt["state_dict"], strict=False)
+            missing_params = [k for k in incompatible.missing_keys if not k.endswith(".A") and not k.endswith(".b")]
+            if missing_params:
+                raise RuntimeError(f"Missing parameter weights in checkpoint state dict: {missing_params[:4]}")
             model.set_actnorm_init()
             model.to(self.device)
             model.eval()
@@ -179,13 +186,23 @@ class STGNFEvaluator:
                 logger.debug(f"[STG-NF] Inference exception: {inf_err}")
 
         # Fallback heuristic scoring: measure torso flatness and keypoint jerkiness
-        y_spans = [float(np.max(p[:, 1]) - np.min(p[:, 1])) for p in sampled]
-        x_spans = [float(np.max(p[:, 0]) - np.min(p[:, 0])) for p in sampled]
+        y_spans = []
+        x_spans = []
+        for p in sampled:
+            valid = p[p[:, 2] > 0.1, :2] if p.shape[-1] >= 3 else p[(p[:, 0] > 0) | (p[:, 1] > 0)]
+            if len(valid) >= 4:
+                x_spans.append(float(np.max(valid[:, 0]) - np.min(valid[:, 0])))
+                y_spans.append(float(np.max(valid[:, 1]) - np.min(valid[:, 1])))
+            else:
+                x_spans.append(float(np.max(p[:, 0]) - np.min(p[:, 0])))
+                y_spans.append(float(np.max(p[:, 1]) - np.min(p[:, 1])))
+
         avg_aspect = np.mean(x_spans) / max(1.0, float(np.mean(y_spans)))
 
         # Aspect ratio > 1.2 indicates horizontal body
         pseudo_nll = 15.0 if avg_aspect > 1.2 else 8.0
-        is_anom = pseudo_nll > self.anomaly_nll_thresh
+        fallback_decision_thresh = min(self.anomaly_nll_thresh, 12.0)
+        is_anom = pseudo_nll > fallback_decision_thresh
         conf = 0.85 if is_anom else 0.10
         return is_anom, pseudo_nll, conf
 

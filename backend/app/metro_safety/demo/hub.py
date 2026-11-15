@@ -331,6 +331,13 @@ class LiveHub:
 
             # Persist for cross-process
             try:
+                geofence_act = True
+                if self.train_state_provider and hasattr(self.train_state_provider, "is_geofence_active"):
+                    try:
+                        geofence_act = self.train_state_provider.is_geofence_active(getattr(self, "platform_id", None))
+                    except Exception:
+                        pass
+
                 t_payload = {
                     "session_id": self.session_id,
                     "cctv_id": self.cctv_id,
@@ -344,6 +351,7 @@ class LiveHub:
                     "stage_timings": self.stage_timings,
                     "synthetic_accuracy": self.synthetic_accuracy_label,
                     "train_state": self.train_state,
+                    "geofence_active": geofence_act,
                     "ets_status": self.ets_status,
                     "is_fallback": self.is_fallback,
                     "source_target": self.source_target,
@@ -459,7 +467,7 @@ class LiveHub:
                     cached = json.loads(TELEMETRY_CACHE_PATH.read_text())
                     cached_pid = cached.get("producer_pid")
                     if cached_pid is not None and cached_pid != os.getpid() and _is_pid_alive(cached_pid):
-                        for k in ["live_fps", "detector_fps", "live_latency_ms", "is_fallback", "source_target", "retry_status", "adaptive_zones", "session_id"]:
+                        for k in ["live_fps", "detector_fps", "live_latency_ms", "is_fallback", "source_target", "retry_status", "adaptive_zones", "session_id", "geofence_active"]:
                             if k in cached:
                                 res[k] = cached[k]
                         if "train_state" in cached:
@@ -508,28 +516,33 @@ class LiveHub:
                 matching = [ev for ev in in_mem if ev.get("session_id") == session_id]
                 if matching:
                     return matching[:limit]
-            return in_mem[:limit]
+            else:
+                return in_mem[:limit]
 
-        # Check disk cache if in-memory is empty
+        # Check disk cache if in-memory is empty or requested session_id is not in memory
         if EVENTS_CACHE_PATH.exists():
             try:
-                lines = EVENTS_CACHE_PATH.read_text(encoding="utf-8").strip().splitlines()
+                with open(EVENTS_CACHE_PATH, "r", encoding="utf-8") as f:
+                    all_lines = f.readlines()
+                lines = all_lines[-150:] if len(all_lines) > 150 else all_lines
                 disk_events = []
                 for line in reversed(lines):
-                    if line.strip():
+                    line_s = line.strip()
+                    if line_s:
                         try:
-                            ev = json.loads(line)
+                            ev = json.loads(line_s)
                             if "session_id" not in ev:
                                 ev["session_id"] = "LEGACY_SESSION"
                             if session_id is None or ev.get("session_id") == session_id:
                                 disk_events.append(ev)
                         except Exception:
                             continue
-                return disk_events[:limit]
+                if disk_events:
+                    return disk_events[:limit]
             except Exception:
                 pass
 
-        return []
+        return in_mem[:limit] if in_mem and session_id is None else []
 
     def add_sse_listener(self) -> queue.Queue:
         q = queue.Queue(maxsize=30)
@@ -615,13 +628,14 @@ class LiveHub:
             "session_id": self.session_id
         })
 
-        # Dispatch cross-process IPC to active producer buzzer
-        try:
-            buzzer_cmd = Path("data/cache/buzzer_control.cmd")
-            buzzer_cmd.parent.mkdir(parents=True, exist_ok=True)
-            buzzer_cmd.write_text(json.dumps({"action": "toggle_mute", "timestamp": time.time()}), encoding="utf-8")
-        except Exception:
-            pass
+        # Dispatch cross-process IPC to active producer buzzer ONLY if self.buzzer is None
+        if self.buzzer is None:
+            try:
+                buzzer_cmd = Path("data/cache/buzzer_control.cmd")
+                buzzer_cmd.parent.mkdir(parents=True, exist_ok=True)
+                buzzer_cmd.write_text(json.dumps({"action": "toggle_mute", "timestamp": time.time()}), encoding="utf-8")
+            except Exception:
+                pass
 
         return {"status": "ok", "muted": new_mute}
 
@@ -658,23 +672,32 @@ class LiveHub:
     def set_train_state(self, new_state: str, platform_id: Optional[str] = None) -> Dict[str, Any]:
         val = str(new_state).upper()
         pid = platform_id or getattr(self, "platform_id", "PL_DOWN_01")
+        my_pid = getattr(self, "platform_id", "PL_DOWN_01")
         with self._lock:
-            self.train_state = val
-            self._explicit_train_state = True
-            if self.train_state_provider:
+            if pid == my_pid:
+                self.train_state = val
+                self._explicit_train_state = True
+                if self.train_state_provider:
+                    try:
+                        from metro_safety.perception.train_state import TrainState
+                        st = TrainState.from_str(val) if hasattr(TrainState, "from_str") else TrainState(val)
+                        self.train_state_provider.set_state(st, platform_id=pid, source="dashboard")
+                    except Exception:
+                        pass
+                try:
+                    if TELEMETRY_CACHE_PATH.exists():
+                        cached = json.loads(TELEMETRY_CACHE_PATH.read_text())
+                        cached["train_state"] = val
+                        TELEMETRY_CACHE_PATH.write_text(json.dumps(cached))
+                except Exception:
+                    pass
+            elif self.train_state_provider:
                 try:
                     from metro_safety.perception.train_state import TrainState
                     st = TrainState.from_str(val) if hasattr(TrainState, "from_str") else TrainState(val)
                     self.train_state_provider.set_state(st, platform_id=pid, source="dashboard")
                 except Exception:
                     pass
-            try:
-                if TELEMETRY_CACHE_PATH.exists():
-                    cached = json.loads(TELEMETRY_CACHE_PATH.read_text())
-                    cached["train_state"] = val
-                    TELEMETRY_CACHE_PATH.write_text(json.dumps(cached))
-            except Exception:
-                pass
         return {"status": "ok", "train_state": val, "platform_id": pid}
 
     def trip_ets(self) -> Dict[str, Any]:
@@ -682,6 +705,11 @@ class LiveHub:
             self.ets_status = "ENGAGED"
             self._explicit_ets_status = True
             logger.warning("[SAFETY TRIP] Emergency Trip Switch manually engaged by Operator!")
+            if hasattr(self, "trip_switch") and self.trip_switch is not None:
+                try:
+                    self.trip_switch.trip(reason="Operator manual ETS trip", timestamp=time.time())
+                except Exception as _te:
+                    logger.warning(f"Error tripping trip_switch: {_te}")
             try:
                 if TELEMETRY_CACHE_PATH.exists():
                     cached = json.loads(TELEMETRY_CACHE_PATH.read_text())
@@ -733,6 +761,11 @@ class LiveHub:
             self.ets_status = "DISENGAGED"
             self._explicit_ets_status = True
             logger.info("[SAFETY TRIP] Emergency Trip Switch reset to DISENGAGED.")
+            if hasattr(self, "trip_switch") and self.trip_switch is not None:
+                try:
+                    self.trip_switch.reset(operator="Operator", timestamp=time.time())
+                except Exception as _re:
+                    logger.warning(f"Error resetting trip_switch: {_re}")
             try:
                 if TELEMETRY_CACHE_PATH.exists():
                     cached = json.loads(TELEMETRY_CACHE_PATH.read_text())
@@ -770,8 +803,8 @@ class LiveHub:
         # Check cross-process IPC file if producer is running in separate process
         import uuid
         req_id = uuid.uuid4().hex
-        cmd_path = Path("data/cache/zone_confirm.cmd")
-        resp_path = Path("data/cache/zone_confirm.resp")
+        cmd_path = Path(f"data/cache/zone_confirm_{req_id}.cmd")
+        resp_path = Path(f"data/cache/zone_confirm_{req_id}.resp")
         try:
             cmd_path.parent.mkdir(parents=True, exist_ok=True)
             if resp_path.exists():

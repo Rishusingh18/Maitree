@@ -177,9 +177,11 @@ anomaly:
     enabled: true
     prone_seconds_l1: 10.0
     prone_seconds_l2: 30.0
+    horizontal_torso_angle_deg: 58.0
     angle_threshold_deg: 58.0
     aspect_ratio_threshold: 1.25
     motion_energy_threshold: 4.5
+    ignore_bench_lying: true
     bench_lying_flag: true
     reassociation_window_sec: 4.0
   loitering:

@@ -84,7 +84,7 @@ Measured on host CPU across 60 frames on `demo_clips/demo_fall.mp4` (YOLO pose 4
 - **Measured CPU Overhead**: **10.71 ms/frame** (including luggage tracking, kinematic pose angle/energy analysis, and flow NLL inference)
 - **Synthetic Benchmark Results (`tools/eval_anomaly.py`)**:
   - Measured Processing Speed: **18.2 FPS**
-  - False Positive Count during Normal Waiting / Walking: **0** (Precision 100% on normal synthetic baselines)
+  - False Positive Count during Normal Waiting / Walking: **0** (0 false positives on negative baseline)
   - Severity Cap Compliance: **100%** (0 false ETS triggers, 0 L3 alarms across all test scenarios)
   - Unit & Integration Test Suite: **72 passed, 5 deselected, 2 warnings** in 46.56s.
 

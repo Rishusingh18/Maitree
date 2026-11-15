@@ -26,7 +26,8 @@ from metro_safety.events.gesture import DistressGestureDetector
 from metro_safety.escalation.engine import EscalationEngine
 from metro_safety.events.models import EventType
 
-CLASSES = ["NORMAL", "LINE_CROSSING", "ACCIDENTAL_FALL", "DELIBERATE_JUMP"]
+CLASSES = ["NORMAL", "LINE_CROSSING", "ACCIDENTAL_FALL", "DELIBERATE_JUMP", "DISTRESS_GESTURE"]
+LEARNED_CLASSES = ["NORMAL", "LINE_CROSSING", "ACCIDENTAL_FALL", "DELIBERATE_JUMP"]
 
 def run_evaluation_suite(output_dir: Path | str = "eval_results") -> Dict[str, Any]:
     out_dir = Path(output_dir)
@@ -62,6 +63,7 @@ def run_evaluation_suite(output_dir: Path | str = "eval_results") -> Dict[str, A
     y_pred_learned = []
     latencies = []
     frame_process_times = []
+    normal_durations_sec = []
 
     # Run evaluation
     for sc_name, target_class, count in test_scenarios:
@@ -69,6 +71,8 @@ def run_evaluation_suite(output_dir: Path | str = "eval_results") -> Dict[str, A
             n_frames = np.random.randint(45, 65)
             variant = "WRISTS_CROSSED" if (i % 2 == 0) else "SIGNAL_FOR_HELP"
             frames_data = gen.generate_person_trajectory(sc_name, num_frames=n_frames, gesture_variant=variant)
+            if target_class == "NORMAL":
+                normal_durations_sec.append(len(frames_data) * 0.04)
 
             # Per-scenario state tracking
             rule_machine = RuleBasedEventClassifier()
@@ -96,7 +100,7 @@ def run_evaluation_suite(output_dir: Path | str = "eval_results") -> Dict[str, A
                 scenario_gesture_events.extend(g_evs)
 
                 for ev in r_evs + g_evs:
-                    dec = escalation.evaluate(event=ev, train_state=TrainState.ABSENT, current_time=ts)
+                    dec = escalation.evaluate(ev, current_time=ts)
                     latencies.append(dec.latency_ms)
 
             # Determine dominant prediction for this scenario
@@ -127,26 +131,29 @@ def run_evaluation_suite(output_dir: Path | str = "eval_results") -> Dict[str, A
     mean_latency = float(np.mean(latencies)) if latencies else 0.8
     p95_latency = float(np.percentile(latencies, 95)) if latencies else 1.5
 
-    # Filter 4-class evaluation for confusion matrix and precision/recall
+    # Evaluation with all classes including DISTRESS_GESTURE
     y_true_filtered = [y for y in y_true_rule if y in CLASSES]
-    y_pred_filtered = [p if p in CLASSES else "NORMAL" for y, p in zip(y_true_rule, y_pred_rule) if y in CLASSES]
+    y_pred_filtered = [p if p in CLASSES else "NORMAL" for p in y_pred_rule]
 
     cm_rule = confusion_matrix(y_true_filtered, y_pred_filtered, labels=CLASSES)
     report_rule = classification_report(y_true_filtered, y_pred_filtered, labels=CLASSES, output_dict=True)
 
-    cm_learned = confusion_matrix(y_true_learned, y_pred_learned, labels=CLASSES)
-    report_learned = classification_report(y_true_learned, y_pred_learned, labels=CLASSES, output_dict=True)
+    cm_learned = confusion_matrix(y_true_learned, y_pred_learned, labels=LEARNED_CLASSES)
+    report_learned = classification_report(y_true_learned, y_pred_learned, labels=LEARNED_CLASSES, output_dict=True)
 
-    # False alerts calculation on normal clips (100 normal sequences)
+    # False alerts calculation on normal clips (accumulating actual generated durations at 0.04s/frame)
     normal_sequences = [p for y, p in zip(y_true_rule, y_pred_rule) if y == "NORMAL"]
     false_positives = sum(1 for p in normal_sequences if p != "NORMAL")
-    # 100 clips of ~2.5 seconds = 250 seconds = 0.069 hours
-    hours_evaluated = (len(normal_sequences) * 2.5) / 3600.0
-    fa_per_hour = false_positives / max(0.001, hours_evaluated)
+    hours_evaluated = sum(normal_durations_sec) / 3600.0 if normal_durations_sec else ((len(normal_sequences) * 2.5) / 3600.0)
+    fa_per_hour = false_positives / max(0.0001, hours_evaluated)
 
     print(f"[Eval] Rule Accuracy: {report_rule['accuracy']*100:.1f}%")
     print(f"[Eval] Learned Accuracy: {report_learned['accuracy']*100:.1f}%")
     print(f"[Eval] FPS: {fps_est:.1f}, Latency: {mean_latency:.2f}ms (p95: {p95_latency:.2f}ms)")
+
+    # Target comparison (strictly > 90%)
+    rule_target_met = "YES" if report_rule['accuracy'] > 0.90 else "NO"
+    learned_target_met = "YES" if report_learned['accuracy'] > 0.90 else "NO"
 
     # Generate Confusion Matrix Plot
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
@@ -186,9 +193,9 @@ def run_evaluation_suite(output_dir: Path | str = "eval_results") -> Dict[str, A
 
 ## 1. Executive Summary & Target Comparison
 - **DMRC Baseline Specification**: > 90% Detection Accuracy for track intrusion & safety line crossing.
-- **Rule-Based State Machine Accuracy**: **{report_rule['accuracy']*100:.2f}%** (Target Met: **YES**)
-- **Learned Temporal Classifier (GBDT) Accuracy**: **{report_learned['accuracy']*100:.2f}%** (Target Met: **YES**)
-- **Mean Pipeline Processing Speed**: **{fps_est:.1f} FPS** on CPU (Near real-time capable).
+- **Rule-Based State Machine Accuracy**: **{report_rule['accuracy']*100:.2f}%** (Target Met: **{rule_target_met}**)
+- **Learned Temporal Classifier (GBDT) Accuracy**: **{report_learned['accuracy']*100:.2f}%** (Target Met: **{learned_target_met}**)
+- **Mean Classifier Throughput**: **{fps_est:.1f} FPS** on CPU (Near real-time capable).
 - **Mean End-to-End Decision Latency**: **{mean_latency:.2f} ms** (95th percentile: **{p95_latency:.2f} ms**).
 - **False Alert Rate on Normal CCTV Footage**: **{fa_per_hour:.2f} false alerts/hour**.
 

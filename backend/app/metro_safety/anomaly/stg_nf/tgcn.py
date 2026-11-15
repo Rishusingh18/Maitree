@@ -28,6 +28,7 @@ class InvConvTemporalGraphical(nn.Module):
         super().__init__()
 
         self.kernel_size = kernel_size
+        assert self.kernel_size == 2, f"STG-NF InvertibleTGCN guarantees 2 graph partitions, got {self.kernel_size}"
         self.conv = InvertibleConv1x1(in_channels, LU_decomposed=LU_decomposed)
 
     def forward(self, x, A, logdetA, logdet=None, reverse=False):
@@ -36,7 +37,7 @@ class InvConvTemporalGraphical(nn.Module):
         graph_det = channels_per_part * t * logdetA[1]
 
         if not reverse:
-            x_conv, conv_det = self.conv(x, logdet=None, reverse=False)
+            x_conv, conv_det = self.conv(x, logdet=0.0, reverse=False)
             x_view = x_conv.view(n, self.kernel_size, channels_per_part, t, v)
             x_test = x_view.permute(0, 2, 3, 1, 4).reshape(n, channels_per_part, t, -1)
             a_test = A.reshape(-1, v)
@@ -52,7 +53,7 @@ class InvConvTemporalGraphical(nn.Module):
             x0 = x_view[:, 0]
             x1 = (x_view[:, 1] - (x0 @ A[0])) @ a1_inverse
             x_rev = torch.cat((x0, x1), dim=1).reshape(n, kc, t, v)
-            z, conv_det = self.conv(x_rev, logdet=None, reverse=True)
+            z, conv_det = self.conv(x_rev, logdet=0.0, reverse=True)
 
             step_det = conv_det - graph_det
             if logdet is not None:
