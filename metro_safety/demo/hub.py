@@ -12,11 +12,12 @@ import time
 import json
 import uuid
 import queue
+import base64
 import logging
 import threading
 from pathlib import Path
 from collections import deque
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, Any, Optional, Tuple, List, Union
 import cv2
 import numpy as np
 
@@ -26,6 +27,71 @@ CACHE_DIR = Path("logs/cache")
 FRAME_CACHE_PATH = CACHE_DIR / "live_frame.jpg"
 TELEMETRY_CACHE_PATH = CACHE_DIR / "live_telemetry.json"
 EVENTS_CACHE_PATH = CACHE_DIR / "live_events.json"
+SNAPSHOTS_DIR = Path("data/snapshots")
+
+
+def save_incident_snapshot(
+    event_id: str,
+    frame_or_bytes: Any,
+    quality: int = 85,
+    thumb_max_dim: int = 320
+) -> Dict[str, Any]:
+    """Save incident snapshot to data/snapshots/{event_id}.jpg and return URLs/data URIs."""
+    if frame_or_bytes is None:
+        return {}
+    try:
+        SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+        clean_id = os.path.basename(str(event_id)).strip()
+        if not clean_id:
+            clean_id = f"EV-{int(time.time() * 1000)}"
+        clean_name = clean_id if clean_id.endswith(".jpg") else f"{clean_id}.jpg"
+        file_path = SNAPSHOTS_DIR / clean_name
+
+        jpeg_bytes: Optional[bytes] = None
+        thumb_bytes: Optional[bytes] = None
+
+        if isinstance(frame_or_bytes, bytes):
+            jpeg_bytes = frame_or_bytes
+            try:
+                nparr = np.frombuffer(jpeg_bytes, np.uint8)
+                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                if img is not None:
+                    h, w = img.shape[:2]
+                    scale = min(1.0, thumb_max_dim / float(max(h, w, 1)))
+                    thumb = cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))), interpolation=cv2.INTER_AREA)
+                    ok, buf = cv2.imencode(".jpg", thumb, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                    if ok:
+                        thumb_bytes = buf.tobytes()
+            except Exception:
+                pass
+        elif isinstance(frame_or_bytes, np.ndarray):
+            ok, buf = cv2.imencode(".jpg", frame_or_bytes, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+            if ok:
+                jpeg_bytes = buf.tobytes()
+            h, w = frame_or_bytes.shape[:2]
+            scale = min(1.0, thumb_max_dim / float(max(h, w, 1)))
+            thumb = cv2.resize(frame_or_bytes, (max(1, int(w * scale)), max(1, int(h * scale))), interpolation=cv2.INTER_AREA)
+            ok_t, buf_t = cv2.imencode(".jpg", thumb, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+            if ok_t:
+                thumb_bytes = buf_t.tobytes()
+
+        if not jpeg_bytes:
+            return {}
+
+        with open(file_path, "wb") as f:
+            f.write(jpeg_bytes)
+
+        target_thumb = thumb_bytes if thumb_bytes else jpeg_bytes
+        data_uri = f"data:image/jpeg;base64,{base64.b64encode(target_thumb).decode('ascii')}"
+
+        return {
+            "snapshot_path": str(file_path).replace("\\", "/"),
+            "snapshot_url": f"/api/snapshots/{clean_name}",
+            "snapshot_data": data_uri
+        }
+    except Exception as e:
+        logger.warning(f"Failed to save incident snapshot for {event_id}: {e}")
+        return {}
 
 
 def _is_pid_alive(pid: Optional[int]) -> bool:
@@ -486,10 +552,39 @@ class LiveHub:
         return res
 
     # ================= Events =================
-    def push_event(self, event_record: Dict[str, Any]):
+    def push_event(self, event_record: Dict[str, Any], frame: Optional[Any] = None):
         """Publish a new incident event."""
         if "session_id" not in event_record:
             event_record["session_id"] = self.session_id
+
+        # Generate unique event ID if missing
+        if "id" not in event_record or not event_record["id"]:
+            now_ms = int(time.time() * 1000)
+            event_record["id"] = f"EV-{now_ms}-0-0"
+
+        # Attach CCTV / Station metadata if missing
+        if "cctv_id" not in event_record:
+            event_record["cctv_id"] = self.cctv_id
+        if "station_id" not in event_record:
+            event_record["station_id"] = self.station_id
+        if "platform_id" not in event_record:
+            event_record["platform_id"] = self.platform_id
+
+        # Auto-capture incident snapshot if missing or if frame is provided
+        if frame is not None or not event_record.get("snapshot_url"):
+            target_source = frame if frame is not None else self._latest_jpeg
+            if target_source is not None:
+                try:
+                    snap_info = save_incident_snapshot(event_record["id"], target_source)
+                    if snap_info:
+                        if not event_record.get("snapshot_path"):
+                            event_record["snapshot_path"] = snap_info.get("snapshot_path")
+                        if not event_record.get("snapshot_url"):
+                            event_record["snapshot_url"] = snap_info.get("snapshot_url")
+                        if not event_record.get("snapshot_data"):
+                            event_record["snapshot_data"] = snap_info.get("snapshot_data")
+                except Exception as snap_err:
+                    logger.warning(f"Failed to auto-capture snapshot for event {event_record.get('id')}: {snap_err}")
 
         with self._lock:
             self.events_history.appendleft(event_record)

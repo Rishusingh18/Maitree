@@ -862,6 +862,19 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
         resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate, max-age=0'
         return resp
 
+    @app.route("/api/snapshots/<path:filename>")
+    def incident_snapshot(filename):
+        """Returns the saved incident snapshot JPEG."""
+        clean_name = os.path.basename(filename).strip()
+        if not clean_name.endswith(".jpg"):
+            clean_name += ".jpg"
+        snap_path = os.path.join("data", "snapshots", clean_name)
+        if not os.path.isfile(snap_path):
+            return Response("Snapshot not found", status=404)
+        with open(snap_path, "rb") as f:
+            data = f.read()
+        return Response(data, mimetype="image/jpeg")
+
     @app.route("/api/telemetry")
     def api_telemetry():
         return jsonify(active_hub.get_telemetry())

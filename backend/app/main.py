@@ -163,6 +163,19 @@ def get_snapshot():
         return Response(content=b"", status_code=503)
     return Response(content=frame_bytes, media_type="image/jpeg")
 
+@app.get("/api/snapshots/{snapshot_id}", tags=["Live Stream"])
+def get_incident_snapshot(snapshot_id: str):
+    """Return single JPEG snapshot of a specific recorded incident."""
+    clean_id = os.path.basename(snapshot_id).strip()
+    if not clean_id.endswith(".jpg"):
+        clean_id += ".jpg"
+    snapshot_path = os.path.join("data", "snapshots", clean_id)
+    if not os.path.isfile(snapshot_path):
+        return Response(content=b"Snapshot not found", status_code=404)
+    with open(snapshot_path, "rb") as f:
+        data = f.read()
+    return Response(content=data, media_type="image/jpeg")
+
 @app.post("/api/zones/confirm", tags=["Operator Controls"])
 async def confirm_zones(authorized: bool = Depends(get_api_key)):
     """Operator confirmation of current or proposed zone alignment."""

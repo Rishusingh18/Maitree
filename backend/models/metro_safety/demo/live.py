@@ -484,7 +484,7 @@ def run_live_pipeline(
                         # Push event to LiveHub for dashboard update
                         try:
                             hub.push_event({
-                                "id": f"EV-{frame_idx}-{ev.track_id}",
+                                "id": f"EV-{int(frame_ts * 1000)}-{frame_idx}-{ev.track_id}",
                                 "timestamp": frame_ts,
                                 "time_str": time.strftime("%H:%M:%S", time.localtime()),
                                 "track_id": ev.track_id,
@@ -498,7 +498,7 @@ def run_live_pipeline(
                                 "is_anomaly": bool(getattr(ev, "metadata", {}).get("is_anomaly", False)),
                                 "anomaly_type": getattr(ev, "metadata", {}).get("anomaly_type", ""),
                                 "snapshot_crop": getattr(ev, "metadata", {}).get("snapshot_crop", None)
-                            })
+                            }, frame=frame)
                         except Exception as hub_ev_err:
                             logger.exception(f"[Live] Error pushing event to LiveHub: {hub_ev_err}")
 

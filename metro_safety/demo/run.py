@@ -415,7 +415,7 @@ def run_pipeline(
                         "session_id": hub.session_id,
                         "zones_unverified": frame_zones_unverified,
                         "zone_version": frame_zone_version
-                    })
+                    }, frame=frame)
                 except Exception:
                     pass
 

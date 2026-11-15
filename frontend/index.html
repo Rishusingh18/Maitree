@@ -2560,10 +2560,16 @@
         const sevBg = inc.severity === 'CRITICAL' ? 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-400' :
                       inc.severity === 'HIGH' ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400' :
                       'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300';
+        const thumbSrc = inc.snapshot_data || inc.snapshot_url || (inc._raw && (inc._raw.snapshot_data || inc._raw.snapshot_url || inc._raw.snapshot_crop)) || inc.img || 'assets/cam101_rajiv_chowk.jpg';
         
         return `
           <tr class="hover:bg-[var(--surface-secondary)] transition-colors cursor-pointer" onclick="openIncidentDrawer('${inc.id}')">
-            <td class="py-3 px-3 font-semibold text-blue-600 dark:text-blue-400">${inc.id}</td>
+            <td class="py-3 px-3 font-semibold text-blue-600 dark:text-blue-400">
+              <div class="flex items-center gap-2.5">
+                <img src="${thumbSrc}" class="w-8 h-8 rounded object-cover border border-[var(--border)] flex-shrink-0" onerror="this.src='assets/cam101_rajiv_chowk.jpg'" alt="thumb"/>
+                <span class="truncate">${inc.id}</span>
+              </div>
+            </td>
             <td class="py-3 px-3 font-medium text-[var(--foreground)]">${inc.classification}</td>
             <td class="py-3 px-3 text-[var(--foreground)]">
               <span>${inc.station}</span>
@@ -2865,10 +2871,16 @@
         const sevBg = inc.severity === 'CRITICAL' ? 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-400' :
                       inc.severity === 'HIGH' ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400' :
                       'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300';
+        const thumbSrc = inc.snapshot_data || inc.snapshot_url || (inc._raw && (inc._raw.snapshot_data || inc._raw.snapshot_url || inc._raw.snapshot_crop)) || inc.img || 'assets/cam101_rajiv_chowk.jpg';
 
         return `
           <tr class="hover:bg-[var(--surface-secondary)] transition-colors cursor-pointer" onclick="openIncidentDrawer('${inc.id}')">
-            <td class="py-3 px-3 font-semibold text-blue-600">${inc.id}</td>
+            <td class="py-3 px-3 font-semibold text-blue-600">
+              <div class="flex items-center gap-2.5">
+                <img src="${thumbSrc}" class="w-8 h-8 rounded object-cover border border-[var(--border)] flex-shrink-0" onerror="this.src='assets/cam101_rajiv_chowk.jpg'" alt="thumb"/>
+                <span class="truncate">${inc.id}</span>
+              </div>
+            </td>
             <td class="py-3 px-3 text-[var(--muted-foreground)] tabular-nums">${inc.time}</td>
             <td class="py-3 px-3 text-[var(--foreground)]">${inc.station} (${inc.platform})</td>
             <td class="py-3 px-3 text-[var(--foreground)]">${inc.classification}</td>
@@ -2924,9 +2936,16 @@
       const tbody = document.getElementById('incidents-table-full-body');
       if (!tbody) return;
 
-      tbody.innerHTML = list.map(inc => `
+      tbody.innerHTML = list.map(inc => {
+        const thumbSrc = inc.snapshot_data || inc.snapshot_url || (inc._raw && (inc._raw.snapshot_data || inc._raw.snapshot_url || inc._raw.snapshot_crop)) || inc.img || 'assets/cam101_rajiv_chowk.jpg';
+        return `
         <tr class="hover:bg-[var(--surface-secondary)] transition-colors cursor-pointer" onclick="openIncidentDrawer('${inc.id}')">
-          <td class="py-3 px-3 font-semibold text-blue-600">${inc.id}</td>
+          <td class="py-3 px-3 font-semibold text-blue-600">
+            <div class="flex items-center gap-2.5">
+              <img src="${thumbSrc}" class="w-8 h-8 rounded object-cover border border-[var(--border)] flex-shrink-0" onerror="this.src='assets/cam101_rajiv_chowk.jpg'" alt="thumb"/>
+              <span class="truncate">${inc.id}</span>
+            </div>
+          </td>
           <td class="py-3 px-3 text-[var(--muted-foreground)] tabular-nums">${inc.time}</td>
           <td class="py-3 px-3 text-[var(--foreground)]">${inc.station} (${inc.platform})</td>
           <td class="py-3 px-3 text-[var(--foreground)]">${inc.classification}</td>
@@ -2937,7 +2956,8 @@
             <button onclick="openIncidentDrawer('${inc.id}')" class="px-2 py-1 border border-[var(--border)] rounded text-xs">Manage</button>
           </td>
         </tr>
-      `).join('');
+      `;
+      }).join('');
     }
 
     function renderCameraTable() {
@@ -3011,12 +3031,30 @@
       const stationEl = document.getElementById('drawer-station');
       const timeEl = document.getElementById('drawer-time');
       const sevEl = document.getElementById('drawer-severity');
+      const imgEl = document.getElementById('drawer-img');
+      const cctvLabel = document.getElementById('drawer-cctv-label');
 
       if (titleId) titleId.textContent = inc.id;
       if (classEl) classEl.textContent = inc.classification;
       if (stationEl) stationEl.textContent = `${inc.station} (${inc.platform})`;
       if (timeEl) timeEl.textContent = inc.time;
-      if (sevEl) sevEl.textContent = inc.severity;
+      if (sevEl) {
+        sevEl.textContent = inc.severity;
+        sevEl.className = inc.severity === 'CRITICAL' ? 'font-semibold text-red-600' :
+                          inc.severity === 'HIGH' ? 'font-semibold text-amber-600' :
+                          'font-semibold text-blue-600';
+      }
+
+      if (cctvLabel) {
+        const cam = inc.cctv_id || (inc._raw && inc._raw.cctv_id) || 'CAM-101';
+        cctvLabel.textContent = `${cam} · ${inc.station} ${inc.platform}`;
+      }
+
+      if (imgEl) {
+        const snap = inc.snapshot_data || inc.snapshot_url || (inc._raw && (inc._raw.snapshot_data || inc._raw.snapshot_url || inc._raw.snapshot_crop)) || inc.img || 'assets/cam101_rajiv_chowk.jpg';
+        imgEl.src = snap;
+        imgEl.onerror = () => { imgEl.src = 'assets/cam101_rajiv_chowk.jpg'; };
+      }
 
       if (drawer && panel) {
         drawer.classList.remove('pointer-events-none', 'opacity-0');
@@ -3431,16 +3469,23 @@
             .map((ev, idx) => {
               const sev = ev.severity || 'L1';
               const sevLabel = sev === 'L3' ? 'CRITICAL' : sev === 'L2' ? 'HIGH' : sev === 'L1' ? 'MEDIUM' : 'LOW';
+              const snapUrl = ev.snapshot_url || (ev.id ? `/api/snapshots/${ev.id}.jpg` : null);
+              const snapImg = ev.snapshot_data || ev.snapshot_crop || snapUrl || 'assets/cam101_rajiv_chowk.jpg';
               return {
                 id: ev.id || `EV-${idx}`,
                 time: ev.time_str || new Date(ev.timestamp * 1000).toLocaleTimeString('en-GB'),
-                line: 'Yellow Line',
-                station: 'Rajiv Chowk',
-                platform: 'Platform 2',
+                line: ev.line || 'Yellow Line',
+                station: ev.station || 'Rajiv Chowk',
+                platform: ev.platform || 'Platform 2',
                 classification: EVENT_TYPE_LABELS[ev.event_type] || ev.event_type,
                 severity: sevLabel,
                 status: 'ACTIVE',
                 operator: 'AI Vision System',
+                cctv_id: ev.cctv_id || 'CAM-101',
+                snapshot_url: snapUrl,
+                snapshot_data: ev.snapshot_data || null,
+                snapshot_crop: ev.snapshot_crop || null,
+                img: snapImg,
                 _raw: ev
               };
             });
