@@ -167,9 +167,14 @@ class AbandonedObjectDetector:
         raw_detections: List[Dict[str, Any]],
         timestamp: float,
         zone_manager: ZoneManager,
-        is_fresh: bool = True
+        is_fresh: bool = True,
+        frame_idx: Optional[int] = None
     ):
         """Associate detections with existing tracked objects."""
+        if frame_idx is not None:
+            self._frame_count = max(self._frame_count + 1, frame_idx)
+        else:
+            self._frame_count += 1
         matched_obj_ids = set()
 
         for det in raw_detections:
@@ -254,7 +259,8 @@ class AbandonedObjectDetector:
         else:
             raw_objs, is_fresh = self.detect_objects_in_frame(frame, frame_idx, timestamp)
 
-        self.update_objects(raw_objs, timestamp, zone_manager, is_fresh=is_fresh)
+        self._frame_count = max(self._frame_count + 1, frame_idx)
+        self.update_objects(raw_objs, timestamp, zone_manager, is_fresh=is_fresh, frame_idx=frame_idx)
 
         # Person positions
         person_anchors = []

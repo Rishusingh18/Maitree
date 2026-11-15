@@ -253,7 +253,14 @@ def run_live_pipeline(
                     cmd_path.unlink()
                     req_id = cmd_data.get("req_id")
                     cmd_ts = float(cmd_data.get("timestamp", 0))
-                    if (time.time() - cmd_ts) <= 2.0:
+                    deadline = float(cmd_data.get("deadline", cmd_ts + 2.0))
+                    cancel_path = Path(f"data/cache/zone_confirm_{req_id}.cancel") if req_id else None
+
+                    # Check timeout and cancellation before committing
+                    is_cancelled = cancel_path.exists() if cancel_path else False
+                    is_expired = time.time() > deadline or (time.time() - cmd_ts) > 2.0
+
+                    if not is_cancelled and not is_expired:
                         c_ok, c_msg = zone_tracker.confirm_alignment()
                         resp_path = Path(f"data/cache/zone_confirm_{req_id}.resp") if req_id else Path("data/cache/zone_confirm.resp")
                         resp_path.write_text(json.dumps({
@@ -262,7 +269,13 @@ def run_live_pipeline(
                             "message": c_msg
                         }), encoding="utf-8")
                     else:
-                        logger.warning(f"[Live] Discarding timed-out zone confirmation command: req_id={req_id}")
+                        logger.warning(f"[Live] Discarding cancelled/timed-out zone confirmation command: req_id={req_id}")
+
+                    if cancel_path and cancel_path.exists():
+                        try:
+                            cancel_path.unlink()
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 

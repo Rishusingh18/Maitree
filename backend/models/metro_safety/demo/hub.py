@@ -43,7 +43,7 @@ def save_incident_snapshot(
         SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
         clean_id = os.path.basename(str(event_id)).strip()
         if not clean_id:
-            clean_id = f"EV-{int(time.time() * 1000)}"
+            clean_id = f"EV-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
         clean_name = clean_id if clean_id.endswith(".jpg") else f"{clean_id}.jpg"
         file_path = SNAPSHOTS_DIR / clean_name
 
@@ -97,6 +97,21 @@ def save_incident_snapshot(
 def _is_pid_alive(pid: Optional[int]) -> bool:
     if not pid or pid <= 0:
         return False
+    if os.name == 'nt':
+        try:
+            import ctypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            SYNCHRONIZE = 0x00100000
+            handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, pid)
+            if handle:
+                exit_code = ctypes.c_ulong()
+                res = ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+                ctypes.windll.kernel32.CloseHandle(handle)
+                STILL_ACTIVE = 259
+                return bool(res and exit_code.value == STILL_ACTIVE)
+            return False
+        except Exception:
+            pass
     try:
         os.kill(pid, 0)
         return True
@@ -533,7 +548,7 @@ class LiveHub:
                     cached = json.loads(TELEMETRY_CACHE_PATH.read_text())
                     cached_pid = cached.get("producer_pid")
                     if cached_pid is not None and cached_pid != os.getpid() and _is_pid_alive(cached_pid):
-                        for k in ["live_fps", "detector_fps", "live_latency_ms", "is_fallback", "source_target", "retry_status", "adaptive_zones", "session_id", "geofence_active"]:
+                        for k in ["live_fps", "detector_fps", "live_latency_ms", "is_fallback", "source_target", "retry_status", "adaptive_zones", "session_id", "geofence_active", "camera_motion", "camera_motion_reason"]:
                             if k in cached:
                                 res[k] = cached[k]
                         if "train_state" in cached:
@@ -560,7 +575,8 @@ class LiveHub:
         # Generate unique event ID if missing
         if "id" not in event_record or not event_record["id"]:
             now_ms = int(time.time() * 1000)
-            event_record["id"] = f"EV-{now_ms}-0-0"
+            unique_suffix = uuid.uuid4().hex[:8]
+            event_record["id"] = f"EV-{now_ms}-{unique_suffix}"
 
         # Attach CCTV / Station metadata if missing
         if "cctv_id" not in event_record:
@@ -606,20 +622,41 @@ class LiveHub:
         with self._lock:
             in_mem = list(self.events_history)
 
-        if in_mem:
-            if session_id:
-                matching = [ev for ev in in_mem if ev.get("session_id") == session_id]
-                if matching:
-                    return matching[:limit]
-            else:
-                return in_mem[:limit]
+        if in_mem and session_id is None:
+            return in_mem[:limit]
 
-        # Check disk cache if in-memory is empty or requested session_id is not in memory
+        if session_id:
+            matching = [ev for ev in in_mem if ev.get("session_id") == session_id]
+            combined_map = {str(ev.get("id") or id(ev)): ev for ev in matching}
+
+            if EVENTS_CACHE_PATH.exists():
+                try:
+                    with open(EVENTS_CACHE_PATH, "r", encoding="utf-8") as f:
+                        lines = list(deque(f, maxlen=150))
+                    for line in reversed(lines):
+                        line_s = line.strip()
+                        if line_s:
+                            try:
+                                ev = json.loads(line_s)
+                                if ev.get("session_id") == session_id:
+                                    eid = str(ev.get("id") or id(ev))
+                                    if eid not in combined_map:
+                                        combined_map[eid] = ev
+                            except Exception:
+                                continue
+                except Exception:
+                    pass
+
+            if combined_map:
+                res = list(combined_map.values())
+                res.sort(key=lambda x: float(x.get("timestamp", 0.0)), reverse=True)
+                return res[:limit]
+
+        # Check disk cache if in-memory is empty
         if EVENTS_CACHE_PATH.exists():
             try:
                 with open(EVENTS_CACHE_PATH, "r", encoding="utf-8") as f:
-                    all_lines = f.readlines()
-                lines = all_lines[-150:] if len(all_lines) > 150 else all_lines
+                    lines = list(deque(f, maxlen=150))
                 disk_events = []
                 for line in reversed(lines):
                     line_s = line.strip()
@@ -723,8 +760,9 @@ class LiveHub:
             "session_id": self.session_id
         })
 
-        # Dispatch cross-process IPC to active producer buzzer ONLY if self.buzzer is None
-        if self.buzzer is None:
+        # Dispatch cross-process IPC to active producer buzzer when this hub is not the producer
+        is_active_producer = bool(self.producer_pid == os.getpid() and getattr(self, "_is_vision_producer", False))
+        if not is_active_producer:
             try:
                 buzzer_cmd = Path("data/cache/buzzer_control.cmd")
                 buzzer_cmd.parent.mkdir(parents=True, exist_ok=True)
@@ -768,49 +806,53 @@ class LiveHub:
         val = str(new_state).upper()
         pid = platform_id or getattr(self, "platform_id", "PL_DOWN_01")
         my_pid = getattr(self, "platform_id", "PL_DOWN_01")
+
         with self._lock:
+            # When target platform is not local, a provider is strictly required
+            if pid != my_pid and not self.train_state_provider:
+                return {"status": "error", "message": f"Train state provider unavailable for platform {pid}", "platform_id": pid}
+
+            if self.train_state_provider:
+                try:
+                    from metro_safety.perception.train_state import TrainState
+                    st = TrainState.from_str(val) if hasattr(TrainState, "from_str") else TrainState(val)
+                    self.train_state_provider.set_state(st, platform_id=pid, source="dashboard")
+                except Exception as ex:
+                    logger.warning(f"Train state provider rejected state update: {ex}")
+                    return {"status": "error", "message": f"Train state provider rejected update: {ex}", "platform_id": pid}
+
             if pid == my_pid:
                 self.train_state = val
                 self._explicit_train_state = True
-                if self.train_state_provider:
-                    try:
-                        from metro_safety.perception.train_state import TrainState
-                        st = TrainState.from_str(val) if hasattr(TrainState, "from_str") else TrainState(val)
-                        self.train_state_provider.set_state(st, platform_id=pid, source="dashboard")
-                    except Exception:
-                        pass
                 try:
                     if TELEMETRY_CACHE_PATH.exists():
                         cached = json.loads(TELEMETRY_CACHE_PATH.read_text())
                         cached["train_state"] = val
                         TELEMETRY_CACHE_PATH.write_text(json.dumps(cached))
-                except Exception:
-                    pass
-            elif self.train_state_provider:
-                try:
-                    from metro_safety.perception.train_state import TrainState
-                    st = TrainState.from_str(val) if hasattr(TrainState, "from_str") else TrainState(val)
-                    self.train_state_provider.set_state(st, platform_id=pid, source="dashboard")
-                except Exception:
-                    pass
+                except Exception as ex:
+                    logger.warning(f"Telemetry cache update failed: {ex}")
+                    return {"status": "error", "message": f"Locally rejected telemetry: {ex}", "platform_id": pid}
+
         return {"status": "ok", "train_state": val, "platform_id": pid}
 
     def trip_ets(self) -> Dict[str, Any]:
         with self._lock:
-            self.ets_status = "ENGAGED"
-            self._explicit_ets_status = True
-            logger.warning("[SAFETY TRIP] Emergency Trip Switch manually engaged by Operator!")
             if hasattr(self, "trip_switch") and self.trip_switch is not None:
                 try:
                     self.trip_switch.trip(reason="Operator manual ETS trip", timestamp=time.time())
                 except Exception as _te:
-                    logger.warning(f"Error tripping trip_switch: {_te}")
+                    logger.error(f"Error tripping trip_switch: {_te}")
+                    self.ets_status = "UNKNOWN"
+                    raise _te
+
+            self.ets_status = "ENGAGED"
+            self._explicit_ets_status = True
+            logger.warning("[SAFETY TRIP] Emergency Trip Switch manually engaged by Operator!")
+
             try:
                 if TELEMETRY_CACHE_PATH.exists():
                     cached = json.loads(TELEMETRY_CACHE_PATH.read_text())
                     cached["ets_status"] = "ENGAGED"
-                    cached["session_id"] = self.session_id
-                    cached["producer_pid"] = self.producer_pid
                     TELEMETRY_CACHE_PATH.write_text(json.dumps(cached))
             except Exception:
                 pass
@@ -900,11 +942,15 @@ class LiveHub:
         req_id = uuid.uuid4().hex
         cmd_path = Path(f"data/cache/zone_confirm_{req_id}.cmd")
         resp_path = Path(f"data/cache/zone_confirm_{req_id}.resp")
+        cancel_path = Path(f"data/cache/zone_confirm_{req_id}.cancel")
         try:
             cmd_path.parent.mkdir(parents=True, exist_ok=True)
             if resp_path.exists():
                 resp_path.unlink()
-            cmd_path.write_text(json.dumps({"req_id": req_id, "timestamp": time.time()}), encoding="utf-8")
+            if cancel_path.exists():
+                cancel_path.unlink()
+            deadline = time.time() + 1.25
+            cmd_path.write_text(json.dumps({"req_id": req_id, "timestamp": time.time(), "deadline": deadline}), encoding="utf-8")
             for _ in range(25):
                 time.sleep(0.05)
                 if resp_path.exists():
@@ -916,7 +962,11 @@ class LiveHub:
                     except Exception:
                         pass
 
-            # Timeout cancellation: clean up cmd_path so stale command cannot execute later
+            # Timeout cancellation: write cancel marker and clean up cmd_path so stale command cannot execute later
+            try:
+                cancel_path.write_text("1", encoding="utf-8")
+            except Exception:
+                pass
             if cmd_path.exists():
                 try:
                     cmd_path.unlink()
@@ -931,11 +981,14 @@ class LiveHub:
 
 # Global module singleton
 _GLOBAL_HUB_INSTANCE: Optional[LiveHub] = None
+_GLOBAL_HUB_LOCK = threading.Lock()
 
 def get_global_hub() -> LiveHub:
     global _GLOBAL_HUB_INSTANCE
     if _GLOBAL_HUB_INSTANCE is None:
-        _GLOBAL_HUB_INSTANCE = LiveHub()
+        with _GLOBAL_HUB_LOCK:
+            if _GLOBAL_HUB_INSTANCE is None:
+                _GLOBAL_HUB_INSTANCE = LiveHub()
     return _GLOBAL_HUB_INSTANCE
 
 def set_global_hub(hub: LiveHub):
