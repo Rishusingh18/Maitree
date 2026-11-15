@@ -631,8 +631,8 @@
         <!-- KPI 1: Active Cameras -->
         <div class="p-4 bg-[var(--surface)] border border-[var(--border)] rounded-lg shadow-xs space-y-1">
           <div class="text-xs font-medium text-[var(--muted-foreground)]">Active Cameras</div>
-          <div class="text-2xl font-semibold text-[var(--foreground)] tabular-nums">32 / 32</div>
-          <div class="text-xs text-emerald-600 dark:text-emerald-400 flex items-center space-x-1">
+          <div id="kpi-active-cameras-val" class="text-2xl font-semibold text-[var(--foreground)] tabular-nums">32 / 32</div>
+          <div id="kpi-active-cameras-sub" class="text-xs text-emerald-600 dark:text-emerald-400 flex items-center space-x-1">
             <span>● 100% operational</span>
           </div>
         </div>
@@ -640,8 +640,8 @@
         <!-- KPI 2: Active Incidents -->
         <div class="p-4 bg-[var(--surface)] border border-[var(--border)] rounded-lg shadow-xs space-y-1">
           <div class="text-xs font-medium text-[var(--muted-foreground)]">Active Incidents</div>
-          <div class="text-2xl font-semibold text-red-600 dark:text-red-400 tabular-nums">1</div>
-          <div class="text-xs text-red-600 dark:text-red-400">
+          <div id="kpi-active-incidents-val" class="text-2xl font-semibold text-red-600 dark:text-red-400 tabular-nums">1</div>
+          <div id="kpi-active-incidents-sub" class="text-xs text-red-600 dark:text-red-400 truncate">
             Rajiv Chowk Platform 2
           </div>
         </div>
@@ -649,8 +649,8 @@
         <!-- KPI 3: Critical Alerts -->
         <div class="p-4 bg-[var(--surface)] border border-[var(--border)] rounded-lg shadow-xs space-y-1">
           <div class="text-xs font-medium text-[var(--muted-foreground)]">Critical Alerts</div>
-          <div class="text-2xl font-semibold text-red-600 dark:text-red-400 tabular-nums">1</div>
-          <div class="text-xs text-amber-600 dark:text-amber-400">
+          <div id="kpi-critical-alerts-val" class="text-2xl font-semibold text-red-600 dark:text-red-400 tabular-nums">1</div>
+          <div id="kpi-critical-alerts-sub" class="text-xs text-amber-600 dark:text-amber-400 truncate">
             Track intrusion detected
           </div>
         </div>
@@ -658,8 +658,8 @@
         <!-- KPI 4: False alarm rate -->
         <div class="p-4 bg-[var(--surface)] border border-[var(--border)] rounded-lg shadow-xs space-y-1">
           <div class="text-xs font-medium text-[var(--muted-foreground)]">False alarms per camera-hour</div>
-          <div class="text-2xl font-semibold text-[var(--foreground)] tabular-nums">0.6</div>
-          <div class="text-xs text-emerald-600 dark:text-emerald-400 flex items-center space-x-1">
+          <div id="kpi-false-alarms-val" class="text-2xl font-semibold text-[var(--foreground)] tabular-nums">0.6</div>
+          <div id="kpi-false-alarms-sub" class="text-xs text-emerald-600 dark:text-emerald-400 flex items-center space-x-1">
             <span>● Under the limit of 1.0</span>
           </div>
         </div>
@@ -2511,7 +2511,10 @@
 
       window.scrollTo({ top: 0, behavior: 'smooth' });
 
-      if (tabId === 'overview') renderOverviewIncidents();
+      if (tabId === 'overview') {
+        renderOverviewIncidents();
+        updateOverviewKPICards();
+      }
       if (tabId === 'monitoring') renderCCTVGrid();
       if (tabId === 'detection') renderDetectionsTable();
       if (tabId === 'incidents') renderIncidentsTable();
@@ -2606,14 +2609,133 @@
       renderOverviewIncidents();
     }
 
+    let _overviewTimeframe = 'Current Shift';
+
     function setOverviewTimeframe(btn, tf) {
+      _overviewTimeframe = tf;
       document.querySelectorAll('#overview-timeframe-btns button').forEach(b => {
         b.classList.remove('bg-[var(--surface)]', 'text-[var(--foreground)]', 'font-semibold', 'shadow-xs');
         b.classList.add('text-[var(--muted-foreground)]');
       });
       btn.classList.add('bg-[var(--surface)]', 'text-[var(--foreground)]', 'font-semibold', 'shadow-xs');
       btn.classList.remove('text-[var(--muted-foreground)]');
+      updateOverviewKPICards();
       acknowledgeAlert(`Overview filter set to: ${tf}`);
+    }
+
+    function updateOverviewKPICards() {
+      // 1. Active Cameras
+      const totalCams = 32;
+      let offlineCount = 0;
+      if (window._telemetryReceived && window._telemetryOnline === false) {
+        offlineCount += 1;
+      }
+      const mockOffline = (typeof mockCameras !== 'undefined' && Array.isArray(mockCameras))
+        ? mockCameras.filter(c => c.status && c.status.toLowerCase().includes('offline')).length
+        : 0;
+      offlineCount += mockOffline;
+      const activeCams = Math.max(0, totalCams - offlineCount);
+      const camPct = Math.round((activeCams / totalCams) * 100);
+
+      const camValEl = document.getElementById('kpi-active-cameras-val');
+      const camSubEl = document.getElementById('kpi-active-cameras-sub');
+      if (camValEl) camValEl.textContent = `${activeCams} / ${totalCams}`;
+      if (camSubEl) {
+        if (camPct === 100) {
+          camSubEl.className = 'text-xs text-emerald-600 dark:text-emerald-400 flex items-center space-x-1';
+          camSubEl.innerHTML = '<span>● 100% operational</span>';
+        } else {
+          camSubEl.className = 'text-xs text-amber-600 dark:text-amber-400 flex items-center space-x-1';
+          camSubEl.innerHTML = `<span>● ${camPct}% operational (${offlineCount} offline)</span>`;
+        }
+      }
+
+      // 2. Active Incidents
+      const activeIncidents = (typeof mockIncidents !== 'undefined' && Array.isArray(mockIncidents))
+        ? mockIncidents.filter(i => i.status === 'ACTIVE' || i.status === 'INVESTIGATING')
+        : [];
+      const activeIncCount = activeIncidents.length;
+
+      const incValEl = document.getElementById('kpi-active-incidents-val');
+      const incSubEl = document.getElementById('kpi-active-incidents-sub');
+      if (incValEl) {
+        incValEl.textContent = activeIncCount;
+        if (activeIncCount > 0) {
+          incValEl.className = 'text-2xl font-semibold text-red-600 dark:text-red-400 tabular-nums';
+        } else {
+          incValEl.className = 'text-2xl font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums';
+        }
+      }
+      if (incSubEl) {
+        if (activeIncCount > 0) {
+          const topInc = activeIncidents[0];
+          const loc = (topInc.station && topInc.platform)
+            ? `${topInc.station} ${topInc.platform}`
+            : (topInc.station || 'Active alert in progress');
+          incSubEl.className = 'text-xs text-red-600 dark:text-red-400 truncate';
+          incSubEl.textContent = loc;
+        } else {
+          incSubEl.className = 'text-xs text-emerald-600 dark:text-emerald-400';
+          incSubEl.textContent = 'All platforms clear';
+        }
+      }
+
+      // 3. Critical Alerts
+      const critIncidents = activeIncidents.filter(i => i.severity === 'CRITICAL' || i.severity === 'L3');
+      const critCount = critIncidents.length;
+
+      const critValEl = document.getElementById('kpi-critical-alerts-val');
+      const critSubEl = document.getElementById('kpi-critical-alerts-sub');
+      if (critValEl) {
+        critValEl.textContent = critCount;
+        if (critCount > 0) {
+          critValEl.className = 'text-2xl font-semibold text-red-600 dark:text-red-400 tabular-nums';
+        } else {
+          critValEl.className = 'text-2xl font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums';
+        }
+      }
+      if (critSubEl) {
+        if (critCount > 0) {
+          const topCrit = critIncidents[0];
+          critSubEl.className = 'text-xs text-amber-600 dark:text-amber-400 truncate';
+          critSubEl.textContent = topCrit.classification || 'Track intrusion detected';
+        } else {
+          critSubEl.className = 'text-xs text-emerald-600 dark:text-emerald-400';
+          critSubEl.textContent = 'No critical threats';
+        }
+      }
+
+      // 4. False alarms per camera-hour
+      let shiftHours = 8;
+      let baseFalseAlarms = 154; // nominal historical baseline for 8h shift across 32 cameras (154 / 256 = 0.6)
+      if (_overviewTimeframe === 'Today') {
+        shiftHours = 24;
+        baseFalseAlarms = 384; // 384 / (32 * 24) = 0.5
+      } else if (_overviewTimeframe === '7 Days') {
+        shiftHours = 168;
+        baseFalseAlarms = 2150; // 2150 / (32 * 168) = 0.4
+      }
+
+      // Add low-severity / resolved events from mockIncidents in current session
+      const resolvedOrLow = (typeof mockIncidents !== 'undefined' && Array.isArray(mockIncidents))
+        ? mockIncidents.filter(i => i.status === 'RESOLVED' || i.severity === 'LOW').length
+        : 0;
+      const totalFalseAlarms = baseFalseAlarms + resolvedOrLow;
+      const cameraHours = totalCams * shiftHours;
+      const faRate = Math.round((totalFalseAlarms / cameraHours) * 10) / 10;
+
+      const faValEl = document.getElementById('kpi-false-alarms-val');
+      const faSubEl = document.getElementById('kpi-false-alarms-sub');
+      if (faValEl) faValEl.textContent = faRate.toFixed(1);
+      if (faSubEl) {
+        if (faRate <= 1.0) {
+          faSubEl.className = 'text-xs text-emerald-600 dark:text-emerald-400 flex items-center space-x-1';
+          faSubEl.innerHTML = '<span>● Under the limit of 1.0</span>';
+        } else {
+          faSubEl.className = 'text-xs text-amber-600 dark:text-amber-400 flex items-center space-x-1';
+          faSubEl.innerHTML = '<span>▲ Exceeds target limit of 1.0</span>';
+        }
+      }
     }
     function filterOverviewSeverity(sev) {
       renderOverviewIncidents(sev);
@@ -3096,6 +3218,7 @@
         activeDrawerIncident.status = 'RESOLVED';
         renderOverviewIncidents();
         renderIncidentsTable();
+        updateOverviewKPICards();
         closeIncidentDrawer();
         acknowledgeAlert(`Incident ${activeDrawerIncident.id} resolved.`);
       }
@@ -3288,6 +3411,7 @@
       renderDetectionsTable();
       renderIncidentsTable();
       renderCameraTable();
+      updateOverviewKPICards();
       updateThemeButtons();
 
       // Start live backend polling after DOM is ready
@@ -3420,6 +3544,11 @@
             zoneBanner.classList.add('hidden');
           }
 
+          // Record live telemetry status for overview KPI cards
+          window._telemetryReceived = true;
+          window._telemetryOnline = !!data.is_online;
+          updateOverviewKPICards();
+
           // Update the diagnostic terminal log
           const termLog = document.getElementById('terminal-log-content');
           if (termLog) {
@@ -3434,6 +3563,10 @@
         })
         .catch(() => {
           if (curGen !== _telemetryReqGen) return;
+          window._telemetryReceived = true;
+          window._telemetryOnline = false;
+          updateOverviewKPICards();
+
           // Mark live connection unavailable or stale
           const cam101status = document.getElementById('cam101-live-status');
           if (cam101status) {
@@ -3512,6 +3645,7 @@
               if (tabId === 'overview') { renderOverviewIncidents(); renderOverviewActivity(); }
               if (tabId === 'incidents') renderIncidentsTable();
             }
+            updateOverviewKPICards();
           }
 
           // Always update activity list with recent events
