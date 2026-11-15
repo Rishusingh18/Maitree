@@ -376,7 +376,7 @@ def run_pipeline(
                 if det.track_id is not None and det.track_id not in active_hazard_tracks:
                     if zone == "platform":
                         escalation.clear_track(det.track_id)
-            if buzzer:
+            if buzzer and not is_fallback:
                 try:
                     buzzer.update_clear_status(has_intrusion)
                 except Exception:
@@ -393,6 +393,12 @@ def run_pipeline(
             current_decision = None
             for ev_idx, ev in enumerate(all_evs):
                 dec = escalation.evaluate(event=ev, train_state=current_train_state, current_time=frame_ts, snapshot=frame)
+                if is_fallback:
+                    dec.buzzer_active = False
+                    dec.ets_triggered = False
+                    if not dec.action_taken.startswith("[STANDBY SIMULATION]"):
+                        dec.action_taken = f"[STANDBY SIMULATION] {dec.action_taken}"
+
                 if current_decision is None or SEVERITY_PRIORITY.get(dec.severity, 0) > SEVERITY_PRIORITY.get(current_decision.severity, 0):
                     current_decision = dec
                 if reg_result.zones_unverified and not dec.action_taken.startswith("[ZONES UNVERIFIED]"):
@@ -425,17 +431,19 @@ def run_pipeline(
                 # Push to live hub for dashboard & SSE streaming (unique ID per event in frame)
                 try:
                     norm_event_type = ev_data.get("event_type", getattr(getattr(ev, "event_type", None), "value", str(getattr(ev, "event_type", "INCIDENT"))))
+                    display_event_type = f"[STANDBY] {norm_event_type}" if (is_fallback and not norm_event_type.startswith("[STANDBY]")) else norm_event_type
                     hub.push_event({
                         "id": f"EV-{int(frame_ts * 1000)}-{frame_idx}-{ev_idx}-{norm_event_type}",
                         "timestamp": frame_ts,
                         "time_str": time.strftime("%H:%M:%S", time.localtime(frame_ts)),
                         "track_id": getattr(ev, "track_id", 0),
-                        "event_type": norm_event_type,
+                        "event_type": display_event_type,
                         "zone": getattr(ev, "zone", "platform"),
                         "severity": dec.severity.value,
                         "confidence": getattr(ev, "confidence", 0.95),
                         "action": dec.action_taken,
                         "is_demo": bool(is_demo),
+                        "is_fallback": bool(is_fallback),
                         "is_anomaly": bool(getattr(ev, "metadata", {}).get("is_anomaly", False)),
                         "anomaly_type": getattr(ev, "metadata", {}).get("anomaly_type", ""),
                         "snapshot_crop": getattr(ev, "metadata", {}).get("snapshot_crop", None),
@@ -501,38 +509,49 @@ def run_pipeline(
                             cv2.circle(annotated, (int(kp[0]), int(kp[1])), 3, (0, 255, 255), -1)
 
             # Severity Banner
-            banner_h = 75
-            sev = current_decision.severity if current_decision else SeverityLevel.NORMAL
-            if sev == SeverityLevel.L3:
-                banner_color = (0, 0, 220)      # Bright Red
-                status_text = "LEVEL 3 EMERGENCY: TRAIN STOP RECOMMENDED / ETS TRIPPED"
-            elif sev == SeverityLevel.L2:
-                banner_color = (0, 140, 255)    # Orange
-                status_text = "LEVEL 2 ALERT: PERSON ON TRACK (BUZZER + CONTROL ROOM)"
-            elif sev == SeverityLevel.L1:
-                banner_color = (0, 220, 240)    # Yellow
-                status_text = "LEVEL 1 WARNING: YELLOW LINE CROSSED (PLATFORM BUZZER)"
-            elif sev == SeverityLevel.DISTRESS:
-                banner_color = (180, 0, 180)    # Purple
-                status_text = "SILENT DISTRESS GESTURE: DISPATCHING STATION SECURITY"
-            else:
-                banner_color = (30, 130, 30)    # Green
-                ts_val = current_train_state.value if hasattr(current_train_state, "value") else str(current_train_state)
-                status_text = f"PLATFORM SECURE | TRAIN: {ts_val}"
-
-            cv2.rectangle(annotated, (0, 0), (w, banner_h), banner_color, -1)
-            cv2.putText(annotated, status_text, (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
-
-            # Live Latency, FPS, and Source Telemetry counter
             src_label = frame_source.source_name
             if len(src_label) > 40:
                 src_label = src_label[:37] + "..."
-            stats_line = f"FPS: {avg_fps:.1f} | LATENCY: {avg_lat_ms:.1f} ms | SRC: {src_label}"
-            cv2.putText(annotated, stats_line, (15, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 1)
+
+            if is_fallback:
+                banner_h = 85
+                cv2.rectangle(annotated, (0, 0), (w, banner_h), (20, 120, 245), -1)
+                cv2.putText(annotated, "[STANDBY SIMULATION] CAMERA DISCONNECTED / OFFLINE", (15, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
+                primary_t = getattr(frame_source, 'primary_target', str(resolved_source))
+                retry_s = getattr(frame_source, 'retry_status', 'Standby')
+                cv2.putText(annotated, f"REPLAYING TEST CLIP | Target: {primary_t} | {retry_s}", (15, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (235, 240, 255), 1)
+                stats_line = f"SIM FPS: {avg_fps:.1f} | LATENCY: {avg_lat_ms:.1f} ms | SRC: {src_label}"
+                cv2.putText(annotated, stats_line, (15, 74), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (220, 230, 240), 1)
+            else:
+                banner_h = 75
+                sev = current_decision.severity if current_decision else SeverityLevel.NORMAL
+                if sev == SeverityLevel.L3:
+                    banner_color = (0, 0, 220)      # Bright Red
+                    status_text = "LEVEL 3 EMERGENCY: TRAIN STOP RECOMMENDED / ETS TRIPPED"
+                elif sev == SeverityLevel.L2:
+                    banner_color = (0, 140, 255)    # Orange
+                    status_text = "LEVEL 2 ALERT: PERSON ON TRACK (BUZZER + CONTROL ROOM)"
+                elif sev == SeverityLevel.L1:
+                    banner_color = (0, 220, 240)    # Yellow
+                    status_text = "LEVEL 1 WARNING: YELLOW LINE CROSSED (PLATFORM BUZZER)"
+                elif sev == SeverityLevel.DISTRESS:
+                    banner_color = (180, 0, 180)    # Purple
+                    status_text = "SILENT DISTRESS GESTURE: DISPATCHING STATION SECURITY"
+                else:
+                    banner_color = (30, 130, 30)    # Green
+                    ts_val = current_train_state.value if hasattr(current_train_state, "value") else str(current_train_state)
+                    status_text = f"PLATFORM SECURE | TRAIN: {ts_val}"
+
+                cv2.rectangle(annotated, (0, 0), (w, banner_h), banner_color, -1)
+                cv2.putText(annotated, status_text, (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
+
+                # Live Latency, FPS, and Source Telemetry counter
+                stats_line = f"FPS: {avg_fps:.1f} | LATENCY: {avg_lat_ms:.1f} ms | SRC: {src_label}"
+                cv2.putText(annotated, stats_line, (15, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 1)
 
             # Hardware Indicators (Buzzer & ETS)
-            buzzer_on = escalation.buzzer.is_active(escalation.platform_id)
-            ets_on = escalation.trip_switch.is_tripped()
+            buzzer_on = False if is_fallback else escalation.buzzer.is_active(escalation.platform_id)
+            ets_on = False if is_fallback else escalation.trip_switch.is_tripped()
 
             b_color = (0, 0, 255) if buzzer_on else (80, 80, 80)
             e_color = (0, 0, 255) if ets_on else (80, 80, 80)

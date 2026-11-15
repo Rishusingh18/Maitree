@@ -204,6 +204,9 @@ async def upload_video(
     and register detected safety incidents into the LiveHub security audit log.
     """
     try:
+        import importlib
+        import metro_safety.tools.video_processor
+        importlib.reload(metro_safety.tools.video_processor)
         from metro_safety.tools.video_processor import process_uploaded_video
         uploads_dir = Path("data/uploads")
         uploads_dir.mkdir(parents=True, exist_ok=True)
@@ -229,6 +232,9 @@ async def upload_video(
 async def run_demo_clip(clip_name: str, register_events: bool = True, platform_id: Optional[str] = None):
     """Process an internal demo clip (e.g. demo_fall.mp4, demo_jump.mp4, demo_distress.mp4) without uploading."""
     try:
+        import importlib
+        import metro_safety.tools.video_processor
+        importlib.reload(metro_safety.tools.video_processor)
         from metro_safety.tools.video_processor import process_uploaded_video
         safe_name = os.path.basename(clip_name)
         if not safe_name.endswith(".mp4"):

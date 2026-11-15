@@ -229,8 +229,14 @@ def process_uploaded_video(
         # Evaluate escalation & register events
         for ev in all_evs:
             dec = escalation.evaluate(event=ev, train_state=None, current_time=frame_ts)
-            if current_decision is None or dec.severity.numeric_level > current_decision.severity.numeric_level:
+            _sev_rank = {'NORMAL': 0, 'L1': 1, 'DISTRESS': 2, 'L2': 3, 'L3': 4}
+            _dec_s = dec.severity.name if hasattr(dec.severity, 'name') else str(dec.severity)
+            if current_decision is None:
                 current_decision = dec
+            else:
+                _curr_s = current_decision.severity.name if hasattr(current_decision.severity, 'name') else str(current_decision.severity)
+                if _sev_rank.get(_dec_s, 0) > _sev_rank.get(_curr_s, 0):
+                    current_decision = dec
 
             # Deduplicate by (event_type, track_id) to avoid flooding identical events
             dedup_key = (ev.event_type.value, ev.track_id or 0)

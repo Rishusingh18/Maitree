@@ -521,8 +521,9 @@
           <button onclick="switchTab('detection')" data-tab="detection" class="nav-btn w-full flex items-center justify-between px-3 py-2 rounded-md text-xs font-medium transition-colors text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--surface-secondary)]">
             <div class="flex items-center space-x-2.5">
               <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
-              <span>AI Detection</span>
+              <span>Digital Forensics</span>
             </div>
+            <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-100 dark:bg-purple-950/50 text-purple-600 dark:text-purple-400">AI</span>
           </button>
 
           <button onclick="switchTab('upload')" data-tab="upload" class="nav-btn w-full flex items-center justify-between px-3 py-2 rounded-md text-xs font-medium transition-colors text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--surface-secondary)]">
@@ -722,9 +723,9 @@
                   <span class="w-2 h-2 rounded-full bg-red-600"></span>
                   <span class="font-semibold text-xs text-[var(--foreground)]">Critical Alerts</span>
                 </div>
-                <span class="px-2 py-0.5 rounded text-[11px] font-medium bg-red-100 dark:bg-red-950/40 text-red-600 dark:text-red-400">1 Active</span>
+                <span id="overview-crit-badge" class="px-2 py-0.5 rounded text-[11px] font-medium bg-red-100 dark:bg-red-950/40 text-red-600 dark:text-red-400">1 Active</span>
               </div>
-              <div class="p-3 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900/40 rounded-md space-y-1">
+              <div id="overview-crit-box" class="p-3 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900/40 rounded-md space-y-1">
                 <div class="flex justify-between items-center text-xs">
                   <span class="font-semibold text-red-700 dark:text-red-400">INC-8942 · Track Breach</span>
                   <span class="text-[11px] text-[var(--muted-foreground)] tabular-nums">14:22:58</span>
@@ -745,9 +746,9 @@
                   <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
                   <span class="font-semibold text-xs text-[var(--foreground)]">Camera Status</span>
                 </div>
-                <span class="text-xs text-emerald-600 dark:text-emerald-400 font-medium">32 / 32 Online</span>
+                <span id="overview-cam-badge" class="text-xs text-emerald-600 dark:text-emerald-400 font-medium">32 / 32 Online</span>
               </div>
-              <div class="space-y-2 text-xs">
+              <div id="overview-cam-list" class="space-y-2 text-xs">
                 <div class="flex justify-between items-center p-2 bg-[var(--surface-secondary)] rounded-md">
                   <span class="text-[var(--foreground)] font-medium">CAM-101 · Rajiv Chowk Plat 2</span>
                   <span class="text-red-600 font-medium">Alert Active</span>
@@ -2553,7 +2554,7 @@
         </div>
         <div class="flex-1">
           <h3 class="text-base font-bold text-[var(--foreground)] tracking-tight">Camera Shift Detected</h3>
-          <p class="text-xs text-amber-600 dark:text-amber-400 font-medium">Interlock Safety Limit Exceeded (&gt; 50px)</p>
+          <p class="text-xs text-amber-600 dark:text-amber-400 font-medium" id="modal-shift-subtitle">Interlock Safety Limit Exceeded (&gt; 50px)</p>
         </div>
         <button onclick="dismissCameraShiftModal()" class="text-[var(--muted-foreground)] hover:text-[var(--foreground)] p-1 cursor-pointer">
           <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -2705,27 +2706,34 @@
       { id: 'CAM-105', name: 'Hauz Khas Plat 1', line: 'Magenta Line', lat: '15 ms', fps: '25', res: '1080p', alert: false, alertType: 'Crowd Surge', conf: '87.2%', img: 'assets/cam105_hauz_khas.jpg' }
     ];
 
+    const _baseNow = Date.now();
     const mockIncidents = [
-      { id: 'INC-8942', time: '14:22:58', line: 'Yellow Line', station: 'Rajiv Chowk', platform: 'Platform 2', classification: 'Track Intrusion', severity: 'CRITICAL', status: 'ACTIVE', operator: 'Controller R. Sharma' },
-      { id: 'INC-8941', time: '14:05:12', line: 'Red Line', station: 'Kashmere Gate', platform: 'Platform 1', classification: 'Yellow Line Overstep', severity: 'HIGH', status: 'INVESTIGATING', operator: 'Controller R. Sharma' },
-      { id: 'INC-8940', time: '13:48:33', line: 'Blue Line', station: 'Mandi House', platform: 'Platform 3', classification: 'Crowd Density Surge', severity: 'HIGH', status: 'RESOLVED', operator: 'Controller V. Nair' },
-      { id: 'INC-8939', time: '13:12:19', line: 'Violet Line', station: 'Central Secretariat', platform: 'Platform 2', classification: 'Unattended Baggage', severity: 'MEDIUM', status: 'RESOLVED', operator: 'Controller V. Nair' },
-      { id: 'INC-8938', time: '12:44:02', line: 'Yellow Line', station: 'Chandni Chowk', platform: 'Platform 1', classification: 'Yellow Line Overstep', severity: 'MEDIUM', status: 'RESOLVED', operator: 'Controller S. Rao' },
-      { id: 'INC-8937', time: '11:58:45', line: 'Blue Line', station: 'Rajiv Chowk', platform: 'Platform 3', classification: 'Crowd Density Surge', severity: 'LOW', status: 'RESOLVED', operator: 'Controller S. Rao' }
+      { id: 'INC-8942', timestamp: Math.floor((_baseNow - 15 * 60 * 1000) / 1000), time: new Date(_baseNow - 15 * 60 * 1000).toLocaleTimeString('en-GB'), line: 'Yellow Line', station: 'Rajiv Chowk', platform: 'Platform 2', classification: 'Track Intrusion', severity: 'CRITICAL', status: 'ACTIVE', operator: 'Controller R. Sharma' },
+      { id: 'INC-8941', timestamp: Math.floor((_baseNow - 45 * 60 * 1000) / 1000), time: new Date(_baseNow - 45 * 60 * 1000).toLocaleTimeString('en-GB'), line: 'Red Line', station: 'Kashmere Gate', platform: 'Platform 1', classification: 'Yellow Line Overstep', severity: 'HIGH', status: 'INVESTIGATING', operator: 'Controller R. Sharma' },
+      { id: 'INC-8940', timestamp: Math.floor((_baseNow - 2 * 3600 * 1000) / 1000), time: new Date(_baseNow - 2 * 3600 * 1000).toLocaleTimeString('en-GB'), line: 'Blue Line', station: 'Mandi House', platform: 'Platform 3', classification: 'Crowd Density Surge', severity: 'HIGH', status: 'RESOLVED', operator: 'Controller V. Nair' },
+      { id: 'INC-8939', timestamp: Math.floor((_baseNow - 4 * 3600 * 1000) / 1000), time: new Date(_baseNow - 4 * 3600 * 1000).toLocaleTimeString('en-GB'), line: 'Violet Line', station: 'Central Secretariat', platform: 'Platform 2', classification: 'Unattended Baggage', severity: 'MEDIUM', status: 'RESOLVED', operator: 'Controller V. Nair' },
+      { id: 'INC-8938', timestamp: Math.floor((_baseNow - 6 * 3600 * 1000) / 1000), time: new Date(_baseNow - 6 * 3600 * 1000).toLocaleTimeString('en-GB'), line: 'Yellow Line', station: 'Chandni Chowk', platform: 'Platform 1', classification: 'Yellow Line Overstep', severity: 'MEDIUM', status: 'RESOLVED', operator: 'Controller S. Rao' },
+      { id: 'INC-8937', timestamp: Math.floor((_baseNow - 14 * 3600 * 1000) / 1000), time: new Date(_baseNow - 14 * 3600 * 1000).toLocaleTimeString('en-GB'), line: 'Blue Line', station: 'Rajiv Chowk', platform: 'Platform 3', classification: 'Crowd Density Surge', severity: 'LOW', status: 'RESOLVED', operator: 'Controller S. Rao' },
+      { id: 'INC-8930', timestamp: Math.floor((_baseNow - 3 * 86400 * 1000) / 1000), time: new Date(_baseNow - 3 * 86400 * 1000).toLocaleTimeString('en-GB'), line: 'Magenta Line', station: 'Hauz Khas', platform: 'Platform 1', classification: 'Unattended Baggage', severity: 'MEDIUM', status: 'RESOLVED', operator: 'Controller V. Nair' },
+      { id: 'INC-8925', timestamp: Math.floor((_baseNow - 5 * 86400 * 1000) / 1000), time: new Date(_baseNow - 5 * 86400 * 1000).toLocaleTimeString('en-GB'), line: 'Yellow Line', station: 'Patel Chowk', platform: 'Platform 2', classification: 'Track Intrusion', severity: 'CRITICAL', status: 'RESOLVED', operator: 'Controller R. Sharma' }
     ];
 
     const mockDetections = [
-      { id: 'DET-5012', time: '14:22:58', station: 'Rajiv Chowk P2', type: 'TRACK_INTRUSION', categoryText: 'Track Envelope Breach', conf: '98.4%', sev: 'CRITICAL', status: 'ACTIVE', img: 'assets/cam101_rajiv_chowk.jpg', action: 'Verify track clearance via CAM-101', bbox: { top: '48%', left: '32%', width: '28%', height: '42%' } },
-      { id: 'DET-5011', time: '14:05:12', station: 'Kashmere Gate P1', type: 'YELLOW_LINE_OVERSTEP', categoryText: 'Yellow Line Overstep', conf: '94.1%', sev: 'HIGH', status: 'INVESTIGATING', img: 'assets/cam102_kashmere_gate.jpg', action: 'Broadcast platform chime zone 1', bbox: { top: '35%', left: '20%', width: '25%', height: '50%' } },
-      { id: 'DET-5010', time: '13:48:33', station: 'Mandi House P3', type: 'CROWD_SURGE', categoryText: 'Crowd Density Surge', conf: '87.2%', sev: 'HIGH', status: 'RESOLVED', img: 'assets/cam104_mandi_house.jpg', action: 'Activate skip-stop contingency', bbox: { top: '30%', left: '15%', width: '70%', height: '55%' } },
-      { id: 'DET-5009', time: '13:12:19', station: 'Central Secretariat P2', type: 'UNATTENDED_BAGGAGE', categoryText: 'Unattended Object', conf: '91.5%', sev: 'MEDIUM', status: 'RESOLVED', img: 'assets/cam103_central_sec.jpg', action: 'Alert platform marshal patrol', bbox: { top: '65%', left: '60%', width: '15%', height: '20%' } }
+      { id: 'DET-5012', timestamp: Math.floor((_baseNow - 15 * 60 * 1000) / 1000), time: new Date(_baseNow - 15 * 60 * 1000).toLocaleTimeString('en-GB'), station: 'Rajiv Chowk P2', type: 'TRACK_INTRUSION', categoryText: 'Track Envelope Breach', conf: '98.4%', sev: 'CRITICAL', status: 'ACTIVE', img: 'assets/cam101_rajiv_chowk.jpg', action: 'Verify track clearance via CAM-101', bbox: { top: '48%', left: '32%', width: '28%', height: '42%' } },
+      { id: 'DET-5011', timestamp: Math.floor((_baseNow - 45 * 60 * 1000) / 1000), time: new Date(_baseNow - 45 * 60 * 1000).toLocaleTimeString('en-GB'), station: 'Kashmere Gate P1', type: 'YELLOW_LINE_OVERSTEP', categoryText: 'Yellow Line Overstep', conf: '94.1%', sev: 'HIGH', status: 'INVESTIGATING', img: 'assets/cam102_kashmere_gate.jpg', action: 'Broadcast platform chime zone 1', bbox: { top: '35%', left: '20%', width: '25%', height: '50%' } },
+      { id: 'DET-5010', timestamp: Math.floor((_baseNow - 2 * 3600 * 1000) / 1000), time: new Date(_baseNow - 2 * 3600 * 1000).toLocaleTimeString('en-GB'), station: 'Mandi House P3', type: 'CROWD_SURGE', categoryText: 'Crowd Density Surge', conf: '87.2%', sev: 'HIGH', status: 'RESOLVED', img: 'assets/cam104_mandi_house.jpg', action: 'Activate skip-stop contingency', bbox: { top: '30%', left: '15%', width: '70%', height: '55%' } },
+      { id: 'DET-5009', timestamp: Math.floor((_baseNow - 4 * 3600 * 1000) / 1000), time: new Date(_baseNow - 4 * 3600 * 1000).toLocaleTimeString('en-GB'), station: 'Central Secretariat P2', type: 'UNATTENDED_BAGGAGE', categoryText: 'Unattended Object', conf: '91.5%', sev: 'MEDIUM', status: 'RESOLVED', img: 'assets/cam103_central_sec.jpg', action: 'Alert platform marshal patrol', bbox: { top: '65%', left: '60%', width: '15%', height: '20%' } }
     ];
 
     let selectedDetectionId = 'DET-5012';
 
     function selectForensicDetection(detId) {
       selectedDetectionId = detId;
-      const det = mockDetections.find(d => d.id === detId) || mockDetections[0];
+      const det = (typeof mockDetections !== 'undefined' && mockDetections.length > 0)
+        ? (mockDetections.find(d => d.id === detId) || mockDetections[0])
+        : null;
+      if (!det) return;
+
       const idEl = document.getElementById('forensic-det-id');
       const imgEl = document.getElementById('forensic-evidence-img');
       const classEl = document.getElementById('forensic-class-text');
@@ -2733,15 +2741,22 @@
       const bboxEl = document.getElementById('forensic-bbox');
 
       if (idEl) idEl.textContent = det.id;
-      if (imgEl && det.img) imgEl.src = det.img;
-      if (classEl) classEl.textContent = det.categoryText;
-      if (actionEl) actionEl.textContent = det.action;
-      if (bboxEl && det.bbox) {
-        bboxEl.style.top = det.bbox.top;
-        bboxEl.style.left = det.bbox.left;
-        bboxEl.style.width = det.bbox.width;
-        bboxEl.style.height = det.bbox.height;
-        bboxEl.innerHTML = `<div class="absolute -top-5 left-0 bg-red-600 text-white px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap">${det.categoryText} (${det.conf})</div>`;
+      if (imgEl) {
+        imgEl.src = (det.img && typeof det.img === 'string') ? det.img : 'assets/cam101_rajiv_chowk.jpg';
+      }
+      if (classEl) classEl.textContent = det.categoryText || 'Safety Anomaly';
+      if (actionEl) actionEl.textContent = det.action || 'Investigate safety envelope event';
+      if (bboxEl) {
+        if (det.bbox) {
+          bboxEl.style.display = 'block';
+          bboxEl.style.top = det.bbox.top;
+          bboxEl.style.left = det.bbox.left;
+          bboxEl.style.width = det.bbox.width;
+          bboxEl.style.height = det.bbox.height;
+          bboxEl.innerHTML = `<div class="absolute -top-5 left-0 bg-red-600 text-white px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap">${det.categoryText} (${det.conf})</div>`;
+        } else {
+          bboxEl.style.display = 'none';
+        }
       }
       renderDetectionsTable();
     }
@@ -2823,11 +2838,32 @@
       if (modal) modal.classList.add('hidden');
     }
 
+    let _overviewTimeframe = 'Current Shift';
+
+    function getTimeframeFilteredIncidents() {
+      const nowMs = Date.now();
+      let maxAgeMs = 8 * 3600 * 1000; // default: Current Shift (8h)
+      if (_overviewTimeframe === 'Today') {
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
+        maxAgeMs = Math.max(nowMs - startOfToday.getTime(), 12 * 3600 * 1000);
+      } else if (_overviewTimeframe === '7 Days') {
+        maxAgeMs = 7 * 86400 * 1000;
+      }
+
+      if (!Array.isArray(mockIncidents)) return [];
+      return mockIncidents.filter(inc => {
+        if (!inc.timestamp) return true;
+        const incMs = inc.timestamp > 1e11 ? inc.timestamp : inc.timestamp * 1000;
+        return (nowMs - incMs) <= maxAgeMs;
+      });
+    }
+
     function renderOverviewIncidents(filterSev = 'ALL', filterStat = 'ALL') {
       const tbody = document.getElementById('overview-incidents-body');
       if (!tbody) return;
 
-      let list = (typeof mockIncidents !== 'undefined' && Array.isArray(mockIncidents)) ? [...mockIncidents] : [];
+      let list = getTimeframeFilteredIncidents();
       if (filterSev !== 'ALL') list = list.filter(i => i.severity === filterSev);
       if (filterStat !== 'ALL') list = list.filter(i => i.status === filterStat);
 
@@ -2837,7 +2873,7 @@
             <td colspan="7" class="py-8 text-center text-[var(--muted-foreground)] text-xs">
               <div class="flex flex-col items-center justify-center space-y-1">
                 <svg class="w-6 h-6 text-emerald-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>
-                <span class="font-medium text-[var(--foreground)]">No active safety incidents in ${_overviewTimeframe}</span>
+                <span class="font-medium text-[var(--foreground)]">No safety incidents in ${_overviewTimeframe}</span>
                 <span class="text-[11px]">All platform safety envelopes clear and operating normally</span>
               </div>
             </td>
@@ -2897,8 +2933,6 @@
       renderOverviewIncidents();
     }
 
-    let _overviewTimeframe = 'Current Shift';
-
     function setOverviewTimeframe(btn, tf) {
       _overviewTimeframe = tf;
       document.querySelectorAll('#overview-timeframe-btns button').forEach(b => {
@@ -2912,11 +2946,68 @@
       acknowledgeAlert(`Overview timeframe filter set to: ${tf}`);
     }
 
+    function updateOperationalCards(activeIncs, critIncs) {
+      // 1. Critical Alerts Card
+      const critBadge = document.getElementById('overview-crit-badge');
+      const critBox = document.getElementById('overview-crit-box');
+      if (critBadge && critBox) {
+        if (critIncs && critIncs.length > 0) {
+          const top = critIncs[0];
+          critBadge.textContent = `${critIncs.length} Active`;
+          critBadge.className = 'px-2 py-0.5 rounded text-[11px] font-medium bg-red-100 dark:bg-red-950/40 text-red-600 dark:text-red-400';
+          critBox.className = 'p-3 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900/40 rounded-md space-y-1';
+          critBox.innerHTML = `
+            <div class="flex justify-between items-center text-xs">
+              <span class="font-semibold text-red-700 dark:text-red-400">${top.id} · ${top.classification}</span>
+              <span class="text-[11px] text-[var(--muted-foreground)] tabular-nums">${top.time}</span>
+            </div>
+            <p class="text-xs text-[var(--foreground)]">${top.station} ${top.platform}. Priority emergency intervention protocol engaged.</p>
+          `;
+        } else {
+          critBadge.textContent = '0 Active';
+          critBadge.className = 'px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-100 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400';
+          critBox.className = 'p-3 bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900/40 rounded-md space-y-1';
+          critBox.innerHTML = `
+            <div class="flex justify-between items-center text-xs">
+              <span class="font-semibold text-emerald-700 dark:text-emerald-400">All Tracks Clear</span>
+              <span class="text-[11px] text-[var(--muted-foreground)] tabular-nums">Real-time</span>
+            </div>
+            <p class="text-xs text-[var(--muted-foreground)]">No critical platform envelope breaches detected in ${_overviewTimeframe}.</p>
+          `;
+        }
+      }
+
+      // 2. Camera Status Card
+      const camStatusBadge = document.getElementById('overview-cam-badge');
+      const camStatusList = document.getElementById('overview-cam-list');
+      if (camStatusBadge && camStatusList && typeof mockCameras !== 'undefined') {
+        const total = 32;
+        const isOnline = window._telemetryOnline !== false;
+        const active = isOnline ? 32 : 31;
+        camStatusBadge.textContent = `${active} / ${total} Online`;
+        camStatusBadge.className = isOnline ? 'text-xs text-emerald-600 dark:text-emerald-400 font-medium' : 'text-xs text-amber-600 font-medium';
+
+        camStatusList.innerHTML = mockCameras.slice(0, 4).map(c => {
+          const hasAlert = activeIncs && activeIncs.some(i => (i.cctv_id && i.cctv_id === c.id) || (i.station === c.station));
+          const statusText = !isOnline && c.id === 'CAM-101' ? 'Connecting...' : hasAlert ? 'Alert Active' : 'Online';
+          const statusCls = hasAlert ? 'text-red-600 font-medium' : statusText === 'Online' ? 'text-emerald-600' : 'text-amber-600';
+          return `
+            <div class="flex justify-between items-center p-2 bg-[var(--surface-secondary)] rounded-md">
+              <span class="text-[var(--foreground)] font-medium">${c.id} · ${c.station} ${c.plat}</span>
+              <span class="${statusCls}">${statusText}</span>
+            </div>
+          `;
+        }).join('');
+      }
+    }
+
     function updateOverviewKPICards() {
+      const filtered = getTimeframeFilteredIncidents();
+
       // 1. Active Cameras
       const totalCams = 32;
       let offlineCount = 0;
-      if (window._telemetryReceived && window._telemetryOnline === false) {
+      if (window._telemetryReceived && (window._telemetryOnline === false || window._telemetryFallback === true)) {
         offlineCount += 1;
       }
       const mockOffline = (typeof mockCameras !== 'undefined' && Array.isArray(mockCameras))
@@ -2935,14 +3026,13 @@
           camSubEl.innerHTML = '<span>● 100% operational</span>';
         } else {
           camSubEl.className = 'text-xs text-amber-600 dark:text-amber-400 flex items-center space-x-1';
-          camSubEl.innerHTML = `<span>● ${camPct}% operational (${offlineCount} offline)</span>`;
+          const reason = window._telemetryFallback ? 'CAM-101 on Standby Fallback' : `${offlineCount} offline`;
+          camSubEl.innerHTML = `<span>● ${camPct}% operational (${reason})</span>`;
         }
       }
 
-      // 2. Active Incidents
-      const activeIncidents = (typeof mockIncidents !== 'undefined' && Array.isArray(mockIncidents))
-        ? mockIncidents.filter(i => i.status === 'ACTIVE' || i.status === 'INVESTIGATING')
-        : [];
+      // 2. Active Incidents (Filtered by Timeframe, excluding simulated standby clips)
+      const activeIncidents = filtered.filter(i => (i.status === 'ACTIVE' || i.status === 'INVESTIGATING') && !i.is_demo);
       const activeIncCount = activeIncidents.length;
 
       const incValEl = document.getElementById('kpi-active-incidents-val');
@@ -2963,14 +3053,17 @@
             : (topInc.station || 'Active alert in progress');
           incSubEl.className = 'text-xs text-red-600 dark:text-red-400 truncate';
           incSubEl.textContent = loc;
+        } else if (window._telemetryFallback) {
+          incSubEl.className = 'text-xs text-amber-600 dark:text-amber-400';
+          incSubEl.textContent = 'Platform secure (CAM-101 in Standby)';
         } else {
           incSubEl.className = 'text-xs text-emerald-600 dark:text-emerald-400';
           incSubEl.textContent = 'All platforms clear';
         }
       }
 
-      // 3. Critical Alerts
-      const critIncidents = activeIncidents.filter(i => i.severity === 'CRITICAL' || i.severity === 'L3');
+      // 3. Critical Alerts (Filtered by Timeframe, excluding simulated standby clips)
+      const critIncidents = activeIncidents.filter(i => (i.severity === 'CRITICAL' || i.severity === 'L3') && !i.is_demo);
       const critCount = critIncidents.length;
 
       const critValEl = document.getElementById('kpi-critical-alerts-val');
@@ -2988,30 +3081,26 @@
           const topCrit = critIncidents[0];
           critSubEl.className = 'text-xs text-amber-600 dark:text-amber-400 truncate';
           critSubEl.textContent = topCrit.classification || 'Track intrusion detected';
+        } else if (window._telemetryFallback) {
+          critSubEl.className = 'text-xs text-amber-600 dark:text-amber-400';
+          critSubEl.textContent = 'Standby mode active';
         } else {
           critSubEl.className = 'text-xs text-emerald-600 dark:text-emerald-400';
           critSubEl.textContent = 'No critical threats';
         }
       }
 
-      // 4. False alarms per camera-hour
+      // 4. False alarms per camera-hour (Filtered by Timeframe)
       let shiftHours = 8;
-      let baseFalseAlarms = 154; // nominal historical baseline for 8h shift across 32 cameras (154 / 256 = 0.6)
       if (_overviewTimeframe === 'Today') {
         shiftHours = 24;
-        baseFalseAlarms = 384; // 384 / (32 * 24) = 0.5
       } else if (_overviewTimeframe === '7 Days') {
         shiftHours = 168;
-        baseFalseAlarms = 2150; // 2150 / (32 * 168) = 0.4
       }
 
-      // Add low-severity / resolved events from mockIncidents in current session
-      const resolvedOrLow = (typeof mockIncidents !== 'undefined' && Array.isArray(mockIncidents))
-        ? mockIncidents.filter(i => i.status === 'RESOLVED' || i.severity === 'LOW').length
-        : 0;
-      const totalFalseAlarms = baseFalseAlarms + resolvedOrLow;
-      const cameraHours = totalCams * shiftHours;
-      const faRate = Math.round((totalFalseAlarms / cameraHours) * 10) / 10;
+      const resolvedOrLow = filtered.filter(i => i.is_false_alarm || (i.status === 'RESOLVED' && i.severity === 'LOW')).length;
+      const cameraHours = activeCams * shiftHours;
+      const faRate = cameraHours > 0 ? (Math.round((resolvedOrLow / cameraHours) * 100) / 100) : 0.0;
 
       const faValEl = document.getElementById('kpi-false-alarms-val');
       const faSubEl = document.getElementById('kpi-false-alarms-sub');
@@ -3025,6 +3114,9 @@
           faSubEl.innerHTML = '<span>▲ Exceeds target limit of 1.0</span>';
         }
       }
+
+      // 5. Update Operational Overview Cards
+      updateOperationalCards(activeIncidents, critIncidents);
     }
     function filterOverviewSeverity(sev) {
       renderOverviewIncidents(sev);
@@ -3173,6 +3265,11 @@
       const tbody = document.getElementById('detections-table-body');
       if (!tbody) return;
 
+      if (!mockDetections || mockDetections.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" class="py-6 text-center text-[var(--muted-foreground)]">No safety detections logged yet. Upload a video or run live CCTV monitoring to populate AI evidence.</td></tr>`;
+        return;
+      }
+
       tbody.innerHTML = mockDetections.map(det => {
         const isSelected = det.id === selectedDetectionId;
         return `
@@ -3250,19 +3347,30 @@
     }
 
     function inspectDetection(detId) {
-      const det = mockDetections.find(d => d.id === detId) || mockDetections[0];
+      const det = (typeof mockDetections !== 'undefined' && mockDetections.length > 0)
+        ? (mockDetections.find(d => d.id === detId) || mockDetections[0])
+        : null;
+      if (!det) return;
+
       const modal = document.getElementById('detection-detail-modal');
       const title = document.getElementById('modal-detection-title');
       const details = document.getElementById('modal-detection-details');
+      const imgEl = document.getElementById('modal-detection-img');
 
-      if (title) title.textContent = `Detection: ${det.id} (${det.categoryText})`;
+      if (imgEl) {
+        imgEl.src = (det.img && typeof det.img === 'string') ? det.img : 'assets/cam101_rajiv_chowk.jpg';
+      }
+      if (title) title.textContent = `Detection: ${det.id} (${det.categoryText || 'Safety Event'})`;
       if (details) {
         details.innerHTML = `
           <div class="p-3 bg-[var(--surface-secondary)] rounded-md space-y-1.5">
             <div class="flex justify-between"><span>Station:</span><span class="font-medium text-[var(--foreground)]">${det.station}</span></div>
-            <div class="flex justify-between"><span>Category:</span><span class="font-medium text-red-600">${det.categoryText}</span></div>
-            <div class="flex justify-between"><span>Confidence:</span><span class="font-medium text-emerald-600">${det.conf}</span></div>
+            <div class="flex justify-between"><span>Category:</span><span class="font-medium text-red-600">${det.categoryText || '--'}</span></div>
+            <div class="flex justify-between"><span>Confidence:</span><span class="font-medium text-emerald-600">${det.conf || '--'}</span></div>
             <div class="flex justify-between"><span>Timestamp:</span><span class="text-[var(--muted-foreground)]">${det.time}</span></div>
+            <div class="flex justify-between"><span>Severity:</span><span class="font-semibold text-red-600">${det.sev || '--'}</span></div>
+            <div class="flex justify-between"><span>Status:</span><span class="font-medium text-emerald-600">${det.status || 'LOGGED'}</span></div>
+            <div class="flex justify-between"><span>Recommended Action:</span><span class="text-[var(--foreground)]">${det.action || '--'}</span></div>
           </div>
         `;
       }
@@ -3507,6 +3615,8 @@
     function resolveCurrentIncident() {
       if (activeDrawerIncident) {
         activeDrawerIncident.status = 'RESOLVED';
+        if (!window._resolvedEventIds) window._resolvedEventIds = new Set();
+        window._resolvedEventIds.add(activeDrawerIncident.id);
         renderOverviewIncidents();
         renderIncidentsTable();
         updateOverviewKPICards();
@@ -3661,19 +3771,30 @@
     }
 
     function exportCSVReport() {
-      let csv = 'Incident ID,Classification,Metro Line,Station & Platform,Severity,Detection Time,Status,Assigned Operator\n';
-      mockIncidents.forEach(i => {
-        csv += `"${i.id}","${i.classification}","${i.line}","${i.platform}","${i.severity}","${i.time}","${i.status}","${i.operator}"\n`;
+      const filtered = typeof getTimeframeFilteredIncidents === 'function' ? getTimeframeFilteredIncidents() : mockIncidents;
+      const nowStr = new Date().toLocaleString('en-GB');
+
+      let csv = `# Platform Safety Overview Export Report\n`;
+      csv += `# Timeframe: ${_overviewTimeframe}\n`;
+      csv += `# Generated At: ${nowStr}\n`;
+      csv += `# Total Incidents: ${filtered.length}\n`;
+      csv += `Incident ID,Classification,Metro Line,Station,Platform,Severity,Detection Time,Status,Assigned Operator\n`;
+
+      filtered.forEach(i => {
+        csv += `"${i.id}","${i.classification}","${i.line || 'Yellow Line'}","${i.station || 'Rajiv Chowk'}","${i.platform || 'Platform 2'}","${i.severity}","${i.time}","${i.status}","${i.operator || 'AI Vision'}"\n`;
       });
+
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.setAttribute('href', url);
-      link.setAttribute('download', 'metro_command_safety_audit.csv');
+      const safeTf = (_overviewTimeframe || 'shift').replace(/\s+/g, '_').toLowerCase();
+      link.setAttribute('download', `Platform_Safety_Report_${safeTf}_${Date.now()}.csv`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      acknowledgeAlert('Report downloaded successfully.');
+      URL.revokeObjectURL(url);
+      acknowledgeAlert(`✓ Exported ${filtered.length} incidents for ${_overviewTimeframe} to CSV`);
     }
 
     // Keybindings
@@ -3840,13 +3961,22 @@
             }
           }
 
-          // Update Adaptive Zones Unverified Banner
+          // Record live telemetry status for overview KPI cards
+          window._telemetryReceived = true;
+          window._telemetryFallback = !!data.is_fallback;
+          window._telemetryOnline = !!data.is_online && !data.is_fallback;
+          updateOverviewKPICards();
+
+          // Update Adaptive Zones Unverified Banner & Interlock Modal
           const zoneBanner = document.getElementById('zone-unverified-banner');
           const zoneBtn = document.getElementById('btn-confirm-zones');
           const zoneTitle = document.getElementById('zone-banner-title');
           const zoneDesc = document.getElementById('zone-banner-desc');
           const az = data.adaptive_zones;
-          if (zoneBanner && az && (az.zones_unverified || az.requires_operator_confirmation || az.status === 'UNVERIFIED_REFERENCE' || az.status === 'ZONES UNVERIFIED' || (az.drift_px > 50))) {
+          const isLivePhysical = data.is_online && !data.is_fallback;
+          const driftVal = Number(az && az.drift_px || 0);
+
+          if (zoneBanner && isLivePhysical && az && (az.zones_unverified || az.requires_operator_confirmation || az.status === 'UNVERIFIED_REFERENCE' || az.status === 'ZONES UNVERIFIED' || (driftVal > 50))) {
             zoneBanner.classList.remove('hidden');
             if (zoneTitle) {
               zoneTitle.textContent = (az.status === 'UNVERIFIED_REFERENCE')
@@ -3854,26 +3984,21 @@
                 : 'ZONES UNVERIFIED — CAMERA DRIFT / OCCLUSION DETECTED';
             }
             if (zoneDesc) {
-              zoneDesc.textContent = `Drift: ${(az.drift_px||0).toFixed(1)}px | Inliers: ${az.inliers||0} | Status: ${az.status}${az.failure_reason ? ' (' + az.failure_reason + ')' : ''}`;
+              zoneDesc.textContent = `Drift: ${driftVal.toFixed(1)}px | Inliers: ${az.inliers||0} | Status: ${az.status}${az.failure_reason ? ' (' + az.failure_reason + ')' : ''}`;
             }
             if (zoneBtn) zoneBtn.disabled = false;
 
-            // Trigger Camera Shift Popup Modal if significant drift or operator confirmation requested
-            if (az.requires_operator_confirmation || (az.drift_px > 50) || az.status === 'UNVERIFIED_REFERENCE') {
-              showCameraShiftModal(az.drift_px, az.inliers, az.status, az.failure_reason);
+            // Trigger Camera Shift Popup Modal ONLY IF camera is genuinely live AND drift has exceeded the 50px interlock threshold
+            if (driftVal > 50 && (az.requires_operator_confirmation || az.zones_unverified || az.status === 'ZONES UNVERIFIED')) {
+              showCameraShiftModal(driftVal, az.inliers, az.status, az.failure_reason);
             }
           } else if (zoneBanner) {
             zoneBanner.classList.add('hidden');
             const shiftModal = document.getElementById('modal-camera-shift');
-            if (shiftModal && !shiftModal.classList.contains('hidden') && az && az.status === 'VERIFIED') {
+            if (shiftModal && !shiftModal.classList.contains('hidden') && (!isLivePhysical || driftVal <= 50 || (az && az.status === 'VERIFIED'))) {
               shiftModal.classList.add('hidden');
             }
           }
-
-          // Record live telemetry status for overview KPI cards
-          window._telemetryReceived = true;
-          window._telemetryOnline = !!data.is_online;
-          updateOverviewKPICards();
 
           // Update the diagnostic terminal log
           const termLog = document.getElementById('terminal-log-content');
@@ -3891,6 +4016,7 @@
           if (curGen !== _telemetryReqGen) return;
           window._telemetryReceived = true;
           window._telemetryOnline = false;
+          window._telemetryFallback = false;
           updateOverviewKPICards();
 
           // Mark live connection unavailable or stale
@@ -3920,31 +4046,43 @@
           if (curGen !== _eventsReqGen) return; // Discard stale response
 
           const events = data.events || [];
-          if (!events.length) return;
+          if (!events.length) {
+            updateOverviewKPICards();
+            return;
+          }
 
           // Convert backend events → mockIncidents format
           const liveIncidents = events
             .filter(ev => !['ALARM_ACKNOWLEDGED', 'BUZZER_MUTED', 'BUZZER_UNMUTED', 'BUZZER_TEST_L1', 'BUZZER_TEST_L2', 'BUZZER_TEST_L3'].includes(ev.event_type))
             .map((ev, idx) => {
+              const isDemo = Boolean(ev.is_demo || ev.is_fallback || (window._telemetryFallback && (!ev.cctv_id || ev.cctv_id === 'CAM-101')));
+              const rawType = ev.event_type || 'INCIDENT';
+              const cleanType = rawType.replace(/^\[STANDBY\]\s*/, '').replace(/^\[DEMO\]\s*/, '');
+              const baseLabel = EVENT_TYPE_LABELS[cleanType] || cleanType;
+              const classification = isDemo ? `[SIMULATION] ${baseLabel}` : baseLabel;
               const sev = ev.severity || 'L1';
               const sevLabel = sev === 'L3' ? 'CRITICAL' : sev === 'L2' ? 'HIGH' : sev === 'L1' ? 'MEDIUM' : 'LOW';
               const snapUrl = ev.snapshot_url || (ev.id ? `/api/snapshots/${ev.id}.jpg` : null);
               const snapImg = ev.snapshot_data || ev.snapshot_crop || snapUrl || 'assets/cam101_rajiv_chowk.jpg';
+              const isResolved = window._resolvedEventIds && window._resolvedEventIds.has(ev.id);
+              const evTs = ev.timestamp ? Math.floor(ev.timestamp) : Math.floor(Date.now() / 1000);
               return {
                 id: ev.id || `EV-${idx}`,
-                time: ev.time_str || new Date(ev.timestamp * 1000).toLocaleTimeString('en-GB'),
+                timestamp: evTs,
+                time: ev.time_str || new Date(evTs * 1000).toLocaleTimeString('en-GB'),
                 line: ev.line || 'Yellow Line',
-                station: ev.station || 'Rajiv Chowk',
-                platform: ev.platform || 'Platform 2',
-                classification: EVENT_TYPE_LABELS[ev.event_type] || ev.event_type,
+                station: ev.station || (window._lastTelemetry && window._lastTelemetry.station_id) || 'Rajiv Chowk',
+                platform: ev.platform || (window._lastTelemetry && window._lastTelemetry.platform_id) || 'Platform 2',
+                classification: classification,
                 severity: sevLabel,
-                status: 'ACTIVE',
-                operator: 'AI Vision System',
-                cctv_id: ev.cctv_id || 'CAM-101',
+                status: isResolved ? 'RESOLVED' : (isDemo ? 'SIMULATION' : 'ACTIVE'),
+                operator: isDemo ? 'Simulation Standby' : 'AI Vision System',
+                cctv_id: ev.cctv_id || (window._lastTelemetry && window._lastTelemetry.cctv_id) || 'CAM-101',
                 snapshot_url: snapUrl,
                 snapshot_data: ev.snapshot_data || null,
                 snapshot_crop: ev.snapshot_crop || null,
                 img: snapImg,
+                is_demo: isDemo,
                 _raw: ev
               };
             });
@@ -3953,6 +4091,30 @@
             // Replace mock data with live data, keeping static ones as fallback for empty periods
             mockIncidents.length = 0;
             liveIncidents.forEach(i => mockIncidents.push(i));
+
+            // Also keep mockDetections synchronized for Digital Forensics view
+            if (typeof mockDetections !== 'undefined') {
+              mockDetections.length = 0;
+              liveIncidents.forEach(i => {
+                mockDetections.push({
+                  id: (i.id || '').replace('EV-', 'DET-'),
+                  timestamp: i.timestamp,
+                  time: i.time,
+                  station: `${i.station} ${i.platform}`,
+                  type: (i._raw && i._raw.event_type) || 'SAFETY_BREACH',
+                  categoryText: i.classification,
+                  conf: i._raw && i._raw.confidence ? `${Math.round(i._raw.confidence * 100)}%` : '98.0%',
+                  sev: i.severity,
+                  status: i.status,
+                  img: i.img || 'assets/cam101_rajiv_chowk.jpg',
+                  action: (i._raw && i._raw.action) || `Verify ${i.classification} at ${i.station}`,
+                  bbox: { top: '35%', left: '25%', width: '35%', height: '45%' }
+                });
+              });
+              if (typeof renderDetectionsTable === 'function') {
+                renderDetectionsTable();
+              }
+            }
 
             // Notify about new events
             const newIds = new Set(liveIncidents.map(i => i.id));
@@ -4102,14 +4264,19 @@
     let _cameraShiftModalSnoozedUntil = 0;
     function showCameraShiftModal(driftPx, inliers, status, failureReason) {
       if (Date.now() < _cameraShiftModalSnoozedUntil) return;
+      const d = Number(driftPx || 0);
+      // Safety guard: NEVER show camera shift interlock popup if camera is offline/fallback or drift <= 50px
+      if (window._telemetryFallback || !window._telemetryOnline || d <= 50) return;
       const modal = document.getElementById('modal-camera-shift');
       if (!modal) return;
       const driftEl = document.getElementById('modal-shift-drift');
       const inliersEl = document.getElementById('modal-shift-inliers');
       const statusEl = document.getElementById('modal-shift-status');
-      if (driftEl) driftEl.textContent = `${(driftPx || 0).toFixed(1)} px (Safety limit: 50.0 px)`;
+      const subEl = document.getElementById('modal-shift-subtitle');
+      if (driftEl) driftEl.textContent = `${d.toFixed(1)} px (Safety limit: 50.0 px)`;
       if (inliersEl) inliersEl.textContent = `${inliers || 0} matches`;
       if (statusEl) statusEl.textContent = status || 'ZONES UNVERIFIED';
+      if (subEl) subEl.textContent = `Interlock Safety Limit Exceeded (${d.toFixed(1)}px > 50.0px)`;
       modal.classList.remove('hidden');
     }
 
@@ -4252,7 +4419,36 @@
           // 4. Render incident list
           renderUploadIncidentsTable(incidents);
 
-          // 5. Sync LiveHub polling so Overview and Incidents tabs immediately update
+          // 5. Populate Digital Forensics view with incidents from this video
+          if (incidents && incidents.length > 0) {
+            mockDetections.length = 0;
+            incidents.forEach(inc => {
+              const snapUrl = inc.snapshot_url || (inc.id ? `/api/snapshots/${inc.id}.jpg` : 'assets/cam101_rajiv_chowk.jpg');
+              const catText = EVENT_TYPE_LABELS[inc.event_type] || inc.event_type;
+              mockDetections.push({
+                id: (inc.id || '').replace('EV-', 'DET-'),
+                time: inc.time_str || new Date().toLocaleTimeString('en-GB'),
+                timestamp: inc.timestamp || Math.floor(Date.now() / 1000),
+                station: `${inc.station_id || 'Platform'} (${inc.zone || 'track_bed'})`,
+                type: inc.event_type,
+                categoryText: catText,
+                conf: inc.confidence ? `${Math.round(inc.confidence * 100)}%` : '98.5%',
+                sev: inc.severity === 'L3' ? 'CRITICAL' : inc.severity === 'L2' ? 'HIGH' : 'MEDIUM',
+                status: 'ACTIVE',
+                img: snapUrl,
+                action: inc.action || `Investigate ${catText} safety breach`,
+                bbox: { top: '35%', left: '25%', width: '35%', height: '45%' }
+              });
+            });
+            if (typeof renderDetectionsTable === 'function') {
+              renderDetectionsTable();
+            }
+            if (mockDetections.length > 0) {
+              selectForensicDetection(mockDetections[0].id);
+            }
+          }
+
+          // 6. Sync LiveHub polling so Overview and Incidents tabs immediately update
           pollEvents();
           updateOverviewKPICards();
 
@@ -4317,14 +4513,24 @@
               </span>
             </td>
             <td class="py-3 px-3 text-right">
-              <a href="${snapUrl}" target="_blank" class="inline-flex items-center space-x-1 px-2.5 py-1 bg-[var(--surface)] hover:bg-[var(--surface-secondary)] border border-[var(--border)] rounded text-[11px] text-[var(--foreground)] font-medium transition-colors">
-                <svg class="w-3 h-3 text-[var(--muted-foreground)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-                <span>Snapshot</span>
-              </a>
+              <div class="inline-flex items-center space-x-1.5">
+                <button onclick="openForensicsInspection('${(inc.id || '').replace('EV-', 'DET-')}')" class="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-[11px] font-medium transition-colors shadow-xs">
+                  Inspect Forensics
+                </button>
+                <a href="${snapUrl}" target="_blank" class="inline-flex items-center space-x-1 px-2.5 py-1 bg-[var(--surface)] hover:bg-[var(--surface-secondary)] border border-[var(--border)] rounded text-[11px] text-[var(--foreground)] font-medium transition-colors">
+                  <svg class="w-3 h-3 text-[var(--muted-foreground)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                  <span>Snapshot</span>
+                </a>
+              </div>
             </td>
           </tr>
         `;
       }).join('');
+    }
+
+    function openForensicsInspection(detId) {
+      switchTab('detection');
+      selectForensicDetection(detId);
     }
 
     function startLivePolling() {
