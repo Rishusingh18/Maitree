@@ -1024,6 +1024,74 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
         status_code = 200 if res.get("status") == "ok" else 400
         return jsonify(res), status_code
 
+    @app.route("/api/video/upload", methods=["POST"])
+    @app.route("/api/upload_video", methods=["POST"])
+    def api_video_upload():
+        """Upload video file, run full inference, and register incidents."""
+        if not _is_authorized():
+            return jsonify({"status": "error", "message": "Unauthorized"}), 403
+        if "file" not in request.files:
+            return jsonify({"status": "error", "message": "No file uploaded"}), 400
+        f = request.files["file"]
+        if not f.filename:
+            return jsonify({"status": "error", "message": "Empty filename"}), 400
+        from metro_safety.tools.video_processor import process_uploaded_video
+        uploads_dir = Path("data/uploads")
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = os.path.basename(f.filename)
+        temp_path = uploads_dir / f"raw_{int(time.time()*1000)}_{safe_name}"
+        f.save(str(temp_path))
+        reg = request.form.get("register_events", "true").lower() in ("true", "1", "yes")
+        pid = request.form.get("platform_id")
+        result = process_uploaded_video(
+            input_path=temp_path,
+            original_filename=safe_name,
+            register_to_hub=reg,
+            platform_id=pid
+        )
+        return jsonify(result)
+
+    @app.route("/api/video/demo/<clip_name>", methods=["POST"])
+    def api_video_demo(clip_name):
+        """Process internal demo clip and register incidents."""
+        if not _is_authorized():
+            return jsonify({"status": "error", "message": "Unauthorized"}), 403
+        from metro_safety.tools.video_processor import process_uploaded_video
+        safe_name = os.path.basename(clip_name)
+        if not safe_name.endswith(".mp4"):
+            safe_name += ".mp4"
+        clip_path = Path("demo_clips") / safe_name
+        if not clip_path.exists():
+            return jsonify({"status": "error", "message": f"Demo clip '{safe_name}' not found"}), 404
+        reg = request.form.get("register_events", "true").lower() in ("true", "1", "yes")
+        pid = request.form.get("platform_id")
+        result = process_uploaded_video(
+            input_path=clip_path,
+            original_filename=safe_name,
+            register_to_hub=reg,
+            platform_id=pid
+        )
+        return jsonify(result)
+
+    @app.route("/api/processed_stream/<video_id>")
+    def api_processed_stream(video_id):
+        """Stream processed video with overlays as MJPEG."""
+        from metro_safety.tools.video_processor import get_cached_processed_stream
+        return Response(
+            get_cached_processed_stream(video_id),
+            mimetype="multipart/x-mixed-replace; boundary=frame"
+        )
+
+    @app.route("/api/processed_video/<video_id>")
+    def api_processed_video(video_id):
+        """Download or view the rendered MP4 video file."""
+        from flask import send_file
+        safe_id = os.path.basename(video_id).strip()
+        video_path = Path("data/uploads") / f"processed_{safe_id}.mp4"
+        if not video_path.exists():
+            return jsonify({"error": "Video not found"}), 404
+        return send_file(str(video_path), mimetype="video/mp4")
+
     return app
 
 # Default app instance

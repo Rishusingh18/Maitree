@@ -2,8 +2,9 @@ import os
 import time
 import logging
 from typing import Optional, Dict, Any
-from fastapi import FastAPI, Request, Response, Depends
-from fastapi.responses import StreamingResponse, JSONResponse
+from pathlib import Path
+from fastapi import FastAPI, Request, Response, Depends, File, UploadFile, Form
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -191,6 +192,90 @@ async def confirm_zones_get():
         {"status": "error", "message": "Method Not Allowed. Use POST /api/zones/confirm."},
         status_code=405
     )
+
+@app.post("/api/video/upload", tags=["Video Forensics"])
+@app.post("/api/upload_video", tags=["Video Forensics"])
+async def upload_video(
+    file: UploadFile = File(...),
+    register_events: bool = Form(True),
+    platform_id: Optional[str] = Form(None)
+):
+    """Upload a platform video to run full AI inference (zones, pose skeletons, bounding boxes)
+    and register detected safety incidents into the LiveHub security audit log.
+    """
+    try:
+        from metro_safety.tools.video_processor import process_uploaded_video
+        uploads_dir = Path("data/uploads")
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = os.path.basename(file.filename or "video.mp4")
+        temp_path = uploads_dir / f"raw_{int(time.time()*1000)}_{safe_name}"
+
+        with open(temp_path, "wb") as f:
+            while chunk := await file.read(1024 * 1024):
+                f.write(chunk)
+
+        result = process_uploaded_video(
+            input_path=temp_path,
+            original_filename=safe_name,
+            register_to_hub=register_events,
+            platform_id=platform_id
+        )
+        return JSONResponse(result)
+    except Exception as e:
+        logger.error(f"Error processing uploaded video: {e}")
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+@app.post("/api/video/demo/{clip_name}", tags=["Video Forensics"])
+async def run_demo_clip(clip_name: str, register_events: bool = True, platform_id: Optional[str] = None):
+    """Process an internal demo clip (e.g. demo_fall.mp4, demo_jump.mp4, demo_distress.mp4) without uploading."""
+    try:
+        from metro_safety.tools.video_processor import process_uploaded_video
+        safe_name = os.path.basename(clip_name)
+        if not safe_name.endswith(".mp4"):
+            safe_name += ".mp4"
+        clip_path = Path("demo_clips") / safe_name
+        if not clip_path.exists():
+            return JSONResponse({"status": "error", "message": f"Demo clip '{safe_name}' not found"}, status_code=404)
+        result = process_uploaded_video(
+            input_path=clip_path,
+            original_filename=safe_name,
+            register_to_hub=register_events,
+            platform_id=platform_id
+        )
+        return JSONResponse(result)
+    except Exception as e:
+        logger.error(f"Error running demo clip: {e}")
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+@app.get("/api/processed_stream/{video_id}", tags=["Video Forensics"])
+def get_processed_stream(video_id: str):
+    """Stream annotated processed video frames as MJPEG for low-latency browser playback."""
+    from metro_safety.tools.video_processor import get_cached_processed_stream
+    return StreamingResponse(
+        get_cached_processed_stream(video_id),
+        media_type="multipart/x-mixed-replace; boundary=frame"
+    )
+
+@app.get("/api/processed_video/{video_id}", tags=["Video Forensics"])
+def get_processed_video(video_id: str):
+    """Download or stream the rendered MP4 file of the processed video."""
+    safe_id = os.path.basename(video_id).strip()
+    video_path = Path("data/uploads") / f"processed_{safe_id}.mp4"
+    if not video_path.exists():
+        return Response(content=b"Video not found", status_code=404)
+    return FileResponse(str(video_path), media_type="video/mp4", filename=f"annotated_{safe_id}.mp4")
+
+@app.get("/api/processed_frame/{video_id}/{frame_num}", tags=["Video Forensics"])
+def get_processed_frame(video_id: str, frame_num: int = 0):
+    """Return a single annotated JPEG frame from the processed video."""
+    from metro_safety.tools.video_processor import PROCESSED_FRAME_CACHE
+    frames = PROCESSED_FRAME_CACHE.get(video_id)
+    if frames and 0 <= frame_num < len(frames):
+        return Response(content=frames[frame_num], media_type="image/jpeg")
+    frame_path = Path("data/uploads") / f"frames_{video_id}" / f"f_{frame_num:05d}.jpg"
+    if frame_path.exists():
+        return Response(content=frame_path.read_bytes(), media_type="image/jpeg")
+    return Response(content=b"Frame not found", status_code=404)
 
 # Mount the enterprise frontend at /
 frontend_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "frontend"))
