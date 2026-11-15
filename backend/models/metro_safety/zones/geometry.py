@@ -98,7 +98,7 @@ class Zone:
                 logger.error(f"[Zone Error] Zone '{name}' polygon is invalid: {err_msg}")
                 raise ValueError(f"Zone '{name}' polygon is invalid: {err_msg}")
 
-        self.polygon = np.array(polygon, dtype=np.int32)
+        self.polygon = np.round(polygon).astype(np.int32)
         if len(self.polygon.shape) == 2:
             self.polygon = self.polygon.reshape((-1, 1, 2))
         int_area = abs(cv2.contourArea(self.polygon))
@@ -215,7 +215,8 @@ class ZoneManager:
         unverified: bool = False,
         draw_baseline: bool = False,
         drift_px: float = 0.0,
-        status_badge: str = ""
+        status_badge: str = "",
+        proposed_zones: Optional[Dict[str, List[List[float]]]] = None
     ) -> np.ndarray:
         """Draw transparent zone overlays onto the frame.
         Optionally renders baseline faint outlines, unverified styling, and drift telemetry.
@@ -256,6 +257,17 @@ class ZoneManager:
                 cv2.putText(frame, lbl, (cX - 30, cY), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
 
         result = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+
+        # Draw proposed zones in bright cyan if operator confirmation is pending
+        if proposed_zones:
+            for p_name, p_pts in proposed_zones.items():
+                if len(p_pts) >= 3:
+                    pts_arr = np.round(p_pts).astype(np.int32).reshape((-1, 1, 2))
+                    cv2.polylines(result, [pts_arr], isClosed=True, color=(255, 255, 0), thickness=2, lineType=cv2.LINE_AA)
+                    m = cv2.moments(pts_arr)
+                    if m["m00"] != 0:
+                        cv2.putText(result, f"{p_name.upper()} [PROPOSED]", (int(m["m10"]/m["m00"]) - 30, int(m["m01"]/m["m00"]) - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 0), 1, cv2.LINE_AA)
 
         # Draw alignment status badge and drift vector arrow if requested
         if status_badge:

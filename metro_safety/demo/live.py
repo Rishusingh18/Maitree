@@ -565,7 +565,8 @@ def run_live_pipeline(
                     unverified=reg_result.zones_unverified,
                     draw_baseline=True,
                     drift_px=reg_result.drift_px,
-                    status_badge=status_badge_text
+                    status_badge=status_badge_text,
+                    proposed_zones=getattr(zone_tracker, "proposed_zones", None)
                 )
 
                 # Draw tracks, pose skeletons, and debug telemetry

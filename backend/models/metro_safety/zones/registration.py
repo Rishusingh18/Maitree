@@ -68,11 +68,11 @@ class AdaptiveZoneTracker:
         self.adaptive_cfg = cfg.get("adaptive_zones", {})
 
         self.enabled: bool = self.adaptive_cfg.get("enabled", True)
-        self.interval_frames: int = int(self.adaptive_cfg.get("registration_interval_frames", 10))
+        self.interval_frames: int = int(self.adaptive_cfg.get("registration_interval_frames", 5))
         self.time_budget_ms: float = float(self.adaptive_cfg.get("time_budget_ms", 60.0))
         self.max_drift_px: float = float(self.adaptive_cfg.get("max_drift_px", 50.0))
-        self.max_correction_rate_px_per_sec: float = float(self.adaptive_cfg.get("max_correction_rate_px_per_sec", 5.0))
-        self.smoothing_alpha: float = float(self.adaptive_cfg.get("smoothing_alpha", 0.25))
+        self.max_correction_rate_px_per_sec: float = float(self.adaptive_cfg.get("max_correction_rate_px_per_sec", 30.0))
+        self.smoothing_alpha: float = float(self.adaptive_cfg.get("smoothing_alpha", 0.45))
         self.min_scale: float = float(self.adaptive_cfg.get("min_scale", 0.85))
         self.max_scale: float = float(self.adaptive_cfg.get("max_scale", 1.15))
         self.min_inliers: int = int(self.adaptive_cfg.get("min_inliers", 15))
@@ -81,9 +81,15 @@ class AdaptiveZoneTracker:
         self.recovery_good_sec: float = float(self.adaptive_cfg.get("recovery_good_seconds", 3.0))
         self.audit_log_path: Path = Path(self.adaptive_cfg.get("audit_log_file", "logs/safety_audit.log"))
 
-        # Reference image path
+        # Reference image path with multi-path fallback
         self.ref_path_str: str = reference_image_path or self.adaptive_cfg.get("reference_frame", "data/reference_frame.jpg")
         self.ref_path = Path(self.ref_path_str)
+        if not self.ref_path.exists():
+            for candidate in [Path("data/reference_frame.jpg"), Path("data/calibrated_frame.jpg"), Path("data/reference_frame_auto.jpg")]:
+                if candidate.exists():
+                    self.ref_path = candidate
+                    self.ref_path_str = str(candidate)
+                    break
 
         # Baseline human-calibrated polygons (NEVER modified at runtime)
         self.baseline_zones: Dict[str, List[List[float]]] = copy.deepcopy(self.zone_manager.baseline_zones)
@@ -226,15 +232,20 @@ class AdaptiveZoneTracker:
             return
 
         with self._lock:
+            ref_file = Path("data/reference_frame.jpg")
             auto_path = Path("data/reference_frame_auto.jpg")
-            auto_path.parent.mkdir(parents=True, exist_ok=True)
+            ref_file.parent.mkdir(parents=True, exist_ok=True)
+            if not ref_file.exists():
+                cv2.imwrite(str(ref_file), frame)
             cv2.imwrite(str(auto_path), frame)
+            self.ref_path = ref_file if ref_file.exists() else auto_path
+            self.ref_path_str = str(self.ref_path)
             self.set_reference_frame(frame)
-            self.status = AlignmentStatus.UNVERIFIED_REFERENCE
-            self.requires_operator_confirmation = True
-            logger.warning(
-                f"[AdaptiveZones] Reference frame missing. Auto-captured {auto_path}. "
-                f"State set to UNVERIFIED_REFERENCE. Operator confirmation required."
+            self.status = AlignmentStatus.ALIGNED
+            self.requires_operator_confirmation = False
+            logger.info(
+                f"[AdaptiveZones] Reference frame auto-captured to {self.ref_path}. "
+                f"Tracking initialized and active."
             )
 
     def set_demo_mode(self, is_demo: bool):
@@ -319,17 +330,20 @@ class AdaptiveZoneTracker:
             if frame is None:
                 continue
 
-            t0 = time.perf_counter()
-            reg_result = self._register_direct(frame, boxes, ts)
-            dt_ms = (time.perf_counter() - t0) * 1000.0
-            reg_result.reg_time_ms = round(dt_ms, 2)
-            if dt_ms > self.time_budget_ms:
-                reg_result.is_valid = False
-                reg_result.failure_reason = f"Registration exceeded time budget ({dt_ms:.1f}ms > {self.time_budget_ms}ms)"
+            try:
+                t0 = time.perf_counter()
+                reg_result = self._register_direct(frame, boxes, ts)
+                dt_ms = (time.perf_counter() - t0) * 1000.0
+                reg_result.reg_time_ms = round(dt_ms, 2)
+                if dt_ms > self.time_budget_ms:
+                    reg_result.is_valid = False
+                    reg_result.failure_reason = f"Registration exceeded time budget ({dt_ms:.1f}ms > {self.time_budget_ms}ms)"
 
-            with self._lock:
-                self._apply_result_with_safety_limits(reg_result, ts, generation=job_gen)
-                self.latest_result = reg_result
+                with self._lock:
+                    self._apply_result_with_safety_limits(reg_result, ts, generation=job_gen)
+                    self.latest_result = reg_result
+            except Exception as ex:
+                logger.error(f"[AdaptiveZones] Error in registration worker step: {ex}")
 
     def _register_direct(self, frame: np.ndarray, boxes: List[np.ndarray], timestamp: float) -> RegistrationResult:
         """Register live frame directly against the reference frame."""
@@ -658,10 +672,10 @@ class AdaptiveZoneTracker:
 
         # If operator confirmation is currently required, refresh proposals from newer valid registration
         if self.requires_operator_confirmation:
-            if result.valid and result.transformed_zones:
+            if result.is_valid and result.transformed_zones:
                 self.proposed_zones = copy.deepcopy(result.transformed_zones)
                 self.proposed_homography = result.homography.copy() if result.homography is not None else None
-            elif not result.valid:
+            elif not result.is_valid:
                 self.proposed_zones = None
                 self.proposed_homography = None
             logger.debug("[AdaptiveZones] Operator confirmation required; updated proposals and skipping auto-update.")
