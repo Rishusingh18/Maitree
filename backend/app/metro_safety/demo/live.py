@@ -102,6 +102,7 @@ def run_live_pipeline(
 
     # 2. Initialize Shared Hub & Hardware Adapters
     hub = get_global_hub()
+    hub._is_vision_producer = True
     hub.cctv_id = cfg["system"]["camera_id"]
     hub.station_id = cfg["system"]["station_id"]
     hub.platform_id = cfg["system"]["platform_id"]
@@ -260,8 +261,15 @@ def run_live_pipeline(
                     is_cancelled = cancel_path.exists() if cancel_path else False
                     is_expired = time.time() > deadline or (time.time() - cmd_ts) > 2.0
 
+                    def _is_request_valid() -> bool:
+                        if cancel_path and cancel_path.exists():
+                            return False
+                        if time.time() > deadline or (time.time() - cmd_ts) > 2.0:
+                            return False
+                        return True
+
                     if not is_cancelled and not is_expired:
-                        c_ok, c_msg = zone_tracker.confirm_alignment()
+                        c_ok, c_msg = zone_tracker.confirm_alignment(is_valid_cb=_is_request_valid)
                         resp_path = Path(f"data/cache/zone_confirm_{req_id}.resp") if req_id else Path("data/cache/zone_confirm.resp")
                         resp_path.write_text(json.dumps({
                             "req_id": req_id,
@@ -496,8 +504,9 @@ def run_live_pipeline(
 
                         # Push event to LiveHub for dashboard update
                         try:
+                            clean_ev_type = str(getattr(getattr(ev, "event_type", None), "name", ev_type_label)).replace("[DEMO]", "").strip()
                             hub.push_event({
-                                "id": f"EV-{int(frame_ts * 1000)}-{frame_idx}-{ev.track_id}",
+                                "id": f"EV-{int(frame_ts * 1000)}-{frame_idx}-{ev.track_id}-{clean_ev_type}",
                                 "timestamp": frame_ts,
                                 "time_str": time.strftime("%H:%M:%S", time.localtime()),
                                 "track_id": ev.track_id,

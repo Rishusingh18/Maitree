@@ -102,6 +102,7 @@ def run_pipeline(
     # Connect to shared LiveHub so run.py also feeds the dashboard
     from metro_safety.demo.hub import get_global_hub
     hub = get_global_hub()
+    hub._is_vision_producer = True
     hub.cctv_id = cfg["system"]["camera_id"]
     hub.station_id = cfg["system"]["station_id"]
     hub.platform_id = cfg["system"]["platform_id"]
@@ -399,7 +400,7 @@ def run_pipeline(
                 try:
                     norm_event_type = ev_data.get("event_type", getattr(getattr(ev, "event_type", None), "value", str(getattr(ev, "event_type", "INCIDENT"))))
                     hub.push_event({
-                        "id": f"EV-{int(frame_ts * 1000)}-{frame_idx}-{ev_idx}",
+                        "id": f"EV-{int(frame_ts * 1000)}-{frame_idx}-{ev_idx}-{norm_event_type}",
                         "timestamp": frame_ts,
                         "time_str": time.strftime("%H:%M:%S", time.localtime(frame_ts)),
                         "track_id": getattr(ev, "track_id", 0),

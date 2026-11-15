@@ -740,12 +740,14 @@ class AdaptiveZoneTracker:
                     drift=self.current_drift_px
                 )
 
-    def confirm_alignment(self) -> Tuple[bool, str]:
+    def confirm_alignment(self, is_valid_cb: Optional[Any] = None) -> Tuple[bool, str]:
         """Operator confirms proposed alignment from the dashboard.
         Accepted alignment lives strictly in memory and is logged to audit log.
         NEVER overwrites saved polygons or config.yaml on disk.
         """
         with self._lock:
+            if is_valid_cb is not None and not is_valid_cb():
+                return False, "Zone confirmation request expired or was cancelled before commit."
             self._mode_generation += 1
             # If reference was unverified at startup
             if self.status == AlignmentStatus.UNVERIFIED_REFERENCE:

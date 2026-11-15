@@ -94,6 +94,23 @@ def save_incident_snapshot(
         return {}
 
 
+def _read_bounded_log_tail(file_path: Path, max_lines: int = 150, max_bytes: int = 65536) -> List[str]:
+    """Read at most max_lines from the tail of a file without scanning the whole file."""
+    try:
+        size = file_path.stat().st_size
+        if size <= 0:
+            return []
+        with open(file_path, "rb") as f:
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+                f.readline()
+            chunk = f.read().decode("utf-8", errors="replace")
+        lines = chunk.splitlines()
+        return lines[-max_lines:]
+    except Exception:
+        return []
+
+
 def _is_pid_alive(pid: Optional[int]) -> bool:
     if not pid or pid <= 0:
         return False
@@ -145,6 +162,9 @@ class LiveHub:
         # Camera Motion & Occlusion
         self.camera_motion: bool = False
         self.camera_motion_reason: str = "Stable"
+
+        # Producer flag
+        self._is_vision_producer: bool = False
 
         # Process ID Tracking (Ensures Producer & Web Server match)
         self.producer_pid: int = os.getpid()
@@ -555,7 +575,7 @@ class LiveHub:
                             if not getattr(self, "_explicit_train_state", False):
                                 res["train_state"] = cached["train_state"]
                         if "ets_status" in cached:
-                            if not getattr(self, "_explicit_ets_status", False):
+                            if not getattr(self, "_explicit_ets_status", False) and getattr(self, "ets_status", "") != "UNKNOWN":
                                 res["ets_status"] = cached["ets_status"]
                         if "is_online" in cached:
                             res["is_online"] = bool(cached["is_online"])
@@ -575,8 +595,10 @@ class LiveHub:
         # Generate unique event ID if missing
         if "id" not in event_record or not event_record["id"]:
             now_ms = int(time.time() * 1000)
-            unique_suffix = uuid.uuid4().hex[:8]
-            event_record["id"] = f"EV-{now_ms}-{unique_suffix}"
+            ev_t = str(event_record.get("event_type", "INCIDENT")).replace(" ", "_").replace("[DEMO]", "").strip()
+            trk = str(event_record.get("track_id", "0"))
+            unique_suffix = uuid.uuid4().hex[:6]
+            event_record["id"] = f"EV-{now_ms}-{trk}-{ev_t}-{unique_suffix}"
 
         # Attach CCTV / Station metadata if missing
         if "cctv_id" not in event_record:
@@ -627,52 +649,42 @@ class LiveHub:
 
         if session_id:
             matching = [ev for ev in in_mem if ev.get("session_id") == session_id]
-            combined_map = {str(ev.get("id") or id(ev)): ev for ev in matching}
+            if matching:
+                return matching[:limit]
 
+            # In-memory had no matching events for session_id; read bounded log tail from disk
             if EVENTS_CACHE_PATH.exists():
-                try:
-                    with open(EVENTS_CACHE_PATH, "r", encoding="utf-8") as f:
-                        lines = list(deque(f, maxlen=150))
-                    for line in reversed(lines):
-                        line_s = line.strip()
-                        if line_s:
-                            try:
-                                ev = json.loads(line_s)
-                                if ev.get("session_id") == session_id:
-                                    eid = str(ev.get("id") or id(ev))
-                                    if eid not in combined_map:
-                                        combined_map[eid] = ev
-                            except Exception:
-                                continue
-                except Exception:
-                    pass
-
-            if combined_map:
-                res = list(combined_map.values())
-                res.sort(key=lambda x: float(x.get("timestamp", 0.0)), reverse=True)
-                return res[:limit]
-
-        # Check disk cache if in-memory is empty
-        if EVENTS_CACHE_PATH.exists():
-            try:
-                with open(EVENTS_CACHE_PATH, "r", encoding="utf-8") as f:
-                    lines = list(deque(f, maxlen=150))
+                lines = _read_bounded_log_tail(EVENTS_CACHE_PATH, max_lines=150)
                 disk_events = []
                 for line in reversed(lines):
                     line_s = line.strip()
                     if line_s:
                         try:
                             ev = json.loads(line_s)
-                            if "session_id" not in ev:
-                                ev["session_id"] = "LEGACY_SESSION"
-                            if session_id is None or ev.get("session_id") == session_id:
+                            if ev.get("session_id") == session_id:
                                 disk_events.append(ev)
                         except Exception:
                             continue
                 if disk_events:
                     return disk_events[:limit]
-            except Exception:
-                pass
+
+        # Check disk cache if in-memory is empty
+        if EVENTS_CACHE_PATH.exists():
+            lines = _read_bounded_log_tail(EVENTS_CACHE_PATH, max_lines=150)
+            disk_events = []
+            for line in reversed(lines):
+                line_s = line.strip()
+                if line_s:
+                    try:
+                        ev = json.loads(line_s)
+                        if "session_id" not in ev:
+                            ev["session_id"] = "LEGACY_SESSION"
+                        if session_id is None or ev.get("session_id") == session_id:
+                            disk_events.append(ev)
+                    except Exception:
+                        continue
+            if disk_events:
+                return disk_events[:limit]
 
         return in_mem[:limit] if in_mem and session_id is None else []
 
@@ -830,8 +842,7 @@ class LiveHub:
                         cached["train_state"] = val
                         TELEMETRY_CACHE_PATH.write_text(json.dumps(cached))
                 except Exception as ex:
-                    logger.warning(f"Telemetry cache update failed: {ex}")
-                    return {"status": "error", "message": f"Locally rejected telemetry: {ex}", "platform_id": pid}
+                    logger.warning(f"Telemetry cache update failed (train state update still active): {ex}")
 
         return {"status": "ok", "train_state": val, "platform_id": pid}
 
@@ -843,6 +854,7 @@ class LiveHub:
                 except Exception as _te:
                     logger.error(f"Error tripping trip_switch: {_te}")
                     self.ets_status = "UNKNOWN"
+                    self._explicit_ets_status = True
                     raise _te
 
             self.ets_status = "ENGAGED"
@@ -993,4 +1005,5 @@ def get_global_hub() -> LiveHub:
 
 def set_global_hub(hub: LiveHub):
     global _GLOBAL_HUB_INSTANCE
+    hub._is_vision_producer = True
     _GLOBAL_HUB_INSTANCE = hub
