@@ -4,6 +4,7 @@ Accepts an uploaded platform CCTV or simulation clip, runs full computer vision 
 - Polygon safety zones (platform, yellow_band, track_bed, danger_zone)
 - YOLOv8 Pose / Synthetic Joint detection
 - ByteTracker object tracking
+- Dynamic train presence & scenario POV detection
 - Behavior, Gesture, and Anomaly Engines
 - Visual overlays: colored bounding boxes, pose skeleton links, severity banners
 - Registers all detected incidents into LiveHub for real-time audit and alert dispatch
@@ -29,6 +30,7 @@ from metro_safety.events.gesture import DistressGestureDetector
 from metro_safety.escalation.engine import EscalationEngine, SeverityLevel
 from metro_safety.perception.train_state import TrainState
 from metro_safety.demo.hub import get_global_hub, save_incident_snapshot
+from metro_safety.tools.auto_suggest_zones import estimate_scenario_zones
 
 logger = logging.getLogger("metro_safety.video_processor")
 
@@ -74,6 +76,52 @@ def get_cached_processed_stream(video_id: str):
         time.sleep(0.04)  # ~25 FPS
 
 
+def probe_video_scenario(
+    cap: cv2.VideoCapture,
+    w: int,
+    h: int,
+    sample_frames: int = 15
+) -> Tuple[TrainState, Optional[Tuple[float, float, float, float]], Optional[str]]:
+    """Inspect initial frames using YOLO object detection to dynamically detect train presence and camera POV."""
+    train_box = None
+    detected_train = False
+    train_state = TrainState.ABSENT
+
+    try:
+        from ultralytics import YOLO
+        yolo = YOLO("yolov8n.pt")
+        for f_i in range(sample_frames):
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                break
+            res = yolo(frame, verbose=False)[0]
+            for b in res.boxes:
+                cls = int(b.cls[0])
+                conf = float(b.conf[0])
+                if (cls == 6 or res.names[cls] == 'train') and conf > 0.35:
+                    bx = b.xyxy[0].cpu().numpy()
+                    area = (bx[2] - bx[0]) * (bx[3] - bx[1])
+                    if area > 0.04 * w * h:
+                        train_box = tuple(bx)
+                        detected_train = True
+                        train_state = TrainState.STOPPED_DOORS_OPEN
+                        break
+            if detected_train:
+                break
+    except Exception as e:
+        logger.warning(f"[VideoProcessor] Train detection probe failed: {e}")
+
+    # Rewind to the first frame
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+    pov = None
+    if train_box is not None:
+        t_center_x = (train_box[0] + train_box[2]) / 2.0
+        pov = "corridor_track_right" if t_center_x > w * 0.5 else "corridor_track_left"
+
+    return train_state, train_box, pov
+
+
 def process_uploaded_video(
     input_path: Path,
     original_filename: str = "uploaded_video.mp4",
@@ -100,15 +148,24 @@ def process_uploaded_video(
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # Scale zones to match video resolution
-    raw_zones = cfg.get("zones", {})
-    ref_w, ref_h = 1920.0, 1080.0
-    sx, sy = float(w) / ref_w, float(h) / ref_h
+    # Dynamic Train & Scenario POV Inspection
+    current_train_state, train_box, pov = probe_video_scenario(cap, w, h)
+    logger.info(f"[VideoProcessor] Video probe: train_state={current_train_state}, pov={pov}, train_box={train_box}")
 
+    # Determine scenario-aware polygon zones
     scaled_zones: Dict[str, List[List[float]]] = {}
-    for zname, pts in raw_zones.items():
-        if pts and len(pts) >= 3:
-            scaled_zones[zname] = [[round(p[0] * sx, 1), round(p[1] * sy, 1)] for p in pts]
+    if current_train_state in (TrainState.STOPPED_DOORS_OPEN, TrainState.PRESENT) or pov is not None:
+        scaled_zones = estimate_scenario_zones(w, h, train_box=train_box, pov_hint=pov)
+
+    if len(scaled_zones) < 4:
+        raw_zones = cfg.get("zones", {})
+        ref_w, ref_h = 1920.0, 1080.0
+        sx, sy = float(w) / ref_w, float(h) / ref_h
+        for zname, pts in raw_zones.items():
+            if pts and len(pts) >= 3:
+                scaled_zones[zname] = [[round(p[0] * sx, 1), round(p[1] * sy, 1)] for p in pts]
+        if len(scaled_zones) < 4:
+            scaled_zones = estimate_scenario_zones(w, h)
 
     zm = ZoneManager(scaled_zones)
 
@@ -160,6 +217,8 @@ def process_uploaded_video(
     frame_bytes_list: List[bytes] = []
 
     frame_idx = 0
+    is_train_docked = current_train_state in (TrainState.STOPPED_DOORS_OPEN, TrainState.PRESENT)
+
     while True:
         ret, frame = cap.read()
         if not ret or frame is None:
@@ -202,17 +261,17 @@ def process_uploaded_video(
         # 2. Tracking
         tracked_dets = tracker.update(detections)
 
-        # 3. Classifications & Anomaly Detection
+        # 3. Classifications & Anomaly Detection (using dynamic train state)
         rule_evs = rule_clf.process_frame(
             frame_idx,
             frame_ts,
             tracked_dets,
             zm,
-            TrainState.ABSENT,
+            current_train_state,
             camera_motion=False,
             motion_reason="Stable"
         )
-        gesture_evs = gesture_det.process_frame(frame_idx, frame_ts, tracked_dets, zm, TrainState.ABSENT)
+        gesture_evs = gesture_det.process_frame(frame_idx, frame_ts, tracked_dets, zm, current_train_state)
         anomaly_evs = []
         if anomaly_engine is not None:
             anomaly_evs = anomaly_engine.process_frame(
@@ -220,15 +279,18 @@ def process_uploaded_video(
                 frame_idx=frame_idx,
                 person_detections=tracked_dets,
                 zone_manager=zm,
-                train_state="ABSENT"
+                train_state=current_train_state.name
             )
 
         all_evs = rule_evs + gesture_evs + anomaly_evs
+        if is_train_docked:
+            from metro_safety.events.rule_classifier import EventType
+            all_evs = [ev for ev in all_evs if ev.event_type not in (EventType.TRACK_INTRUSION, EventType.DELIBERATE_JUMP, EventType.LINE_CROSSING)]
         current_decision = None
 
         # Evaluate escalation & register events
         for ev in all_evs:
-            dec = escalation.evaluate(event=ev, train_state=None, current_time=frame_ts)
+            dec = escalation.evaluate(event=ev, train_state=current_train_state, current_time=frame_ts)
             _sev_rank = {'NORMAL': 0, 'L1': 1, 'DISTRESS': 2, 'L2': 3, 'L3': 4}
             _dec_s = dec.severity.name if hasattr(dec.severity, 'name') else str(dec.severity)
             if current_decision is None:
@@ -285,12 +347,29 @@ def process_uploaded_video(
             foot = det.foot_anchor
             zone_name = zm.get_zone_for_point(foot)
 
-            # Red for track/danger, Yellow for yellow band, Green for platform
-            box_color = (0, 0, 255) if zone_name in ["track_bed", "danger_zone"] else ((0, 230, 255) if zone_name == "yellow_band" else (0, 200, 0))
+            if is_train_docked:
+                if zone_name in ["track_bed", "danger_zone", "yellow_band"]:
+                    box_color = (200, 200, 0)  # Cyan/Teal (BGR: 200, 200, 0)
+                    label_text = f"ID:{tid} [BOARDING]"
+                else:
+                    box_color = (0, 200, 0)
+                    label_text = f"ID:{tid} [PLATFORM]"
+            else:
+                if zone_name in ["track_bed", "danger_zone"]:
+                    box_color = (0, 0, 255)
+                    label_text = f"ID:{tid} [{zone_name.upper()}]"
+                elif zone_name == "yellow_band":
+                    box_color = (0, 230, 255)
+                    label_text = f"ID:{tid} [YELLOW_BAND]"
+                else:
+                    box_color = (0, 200, 0)
+                    label_text = f"ID:{tid} [PLATFORM]"
+
             cv2.rectangle(annotated, (bx[0], bx[1]), (bx[2], bx[3]), box_color, 2)
-            cv2.putText(annotated, f"ID:{tid} [{zone_name.upper()}]", (bx[0], max(18, bx[1] - 8)),
+            cv2.putText(annotated, label_text, (bx[0], max(18, bx[1] - 8)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.52, box_color, 2)
-            cv2.circle(annotated, (int(foot[0]), int(foot[1])), 5, (0, 0, 255), -1)
+            foot_color = (200, 200, 0) if (is_train_docked and zone_name != "platform") else ((0, 0, 255) if zone_name in ["track_bed", "danger_zone"] else (0, 255, 0))
+            cv2.circle(annotated, (int(foot[0]), int(foot[1])), 5, foot_color, -1)
 
             # Skeletons
             if det.keypoints is not None:
@@ -304,13 +383,17 @@ def process_uploaded_video(
                     if kp[2] > 0.15:
                         cv2.circle(annotated, (int(kp[0]), int(kp[1])), 3, (0, 200, 255), -1)
 
-        # C. Incident Banner Overlay
+        # C. Incident / Status Banner Overlay
         if current_decision and current_decision.severity != SeverityLevel.NORMAL:
             sev = current_decision.severity
             banner_color = (0, 0, 220) if sev == SeverityLevel.L3 else ((0, 140, 255) if sev == SeverityLevel.L2 else (0, 220, 240))
             cv2.rectangle(annotated, (0, 0), (w, 42), banner_color, -1)
             banner_text = f"🚨 {sev.name}: {current_decision.action_taken}"
             cv2.putText(annotated, banner_text[:80], (15, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 255, 255), 2)
+        elif is_train_docked:
+            cv2.rectangle(annotated, (0, 0), (w, 36), (20, 120, 40), -1)
+            banner_text = "PLATFORM SECURE | METRO DOCKED (DOORS OPEN) - NORMAL PASSENGER BOARDING"
+            cv2.putText(annotated, banner_text, (15, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.54, (255, 255, 255), 2)
 
         # Write to output MP4
         if writer is not None:

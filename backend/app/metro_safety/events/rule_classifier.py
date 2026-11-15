@@ -129,8 +129,36 @@ class TrackStateMachine:
         prev = self.observations[-2]
         oldest = self.observations[0]
 
+        # Check if train is stopped / docked at the platform
+        is_train_docked = (
+            not geofence_active
+            or train_state in (TrainState.STOPPED_DOORS_OPEN, TrainState.PRESENT)
+        )
+
         # 1. Check if person is on track / entering track
         if self.track_consecutive >= self.track_intrus_thresh or latest.zone in ["track_bed", "danger_zone"]:
+            # If train is docked at platform and person is in danger clearance zone (train doorway),
+            # upright passengers boarding or standing in doorway are NOT jumpers or intruders.
+            if is_train_docked and latest.zone == "danger_zone":
+                # Only severe accidental fall into the gap (severe vertical drop + collapsed posture) is flagged
+                w_gap_len = min(len(self.observations), 6)
+                cum_gap_disp = latest.torso_point[1] - self.observations[-w_gap_len].torso_point[1]
+                if (
+                    len(self.observations) >= self.min_event_frames
+                    and latest.torso_angle <= 30.0
+                    and cum_gap_disp >= 25.0
+                ):
+                    self.confirmed_fall = True
+                    return self._make_event(
+                        EventType.ACCIDENTAL_FALL,
+                        confidence=0.88,
+                        obs=latest,
+                        train_state=train_state,
+                        meta={"gap_fall": True}
+                    )
+                # Upright passenger boarding/alighting in doorway: safe, do not trigger false intrusion or jump
+                return None
+
             # If already classified as fall or jump, preserve it (capped at 0.95/0.92)
             if self.confirmed_fall:
                 return self._make_event(EventType.ACCIDENTAL_FALL, 0.95, latest, train_state)
