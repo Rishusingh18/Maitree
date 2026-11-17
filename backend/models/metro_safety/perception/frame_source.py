@@ -368,8 +368,12 @@ def create_frame_source(
 
     uri_str = str(source_uri).strip()
     if uri_str.lower().startswith("http://") or uri_str.lower().startswith("https://") or uri_str.lower().startswith("rtsp://"):
+        target = uri_str
+        # Auto-normalize IP Webcam root URLs (e.g., http://192.0.0.4:8080 or http://192.0.0.4:8080/) to /video stream endpoint
+        if ":8080" in target and not any(target.lower().endswith(ep) for ep in ["/video", "/videofeed", "/video.mjpg"]):
+            target = target.rstrip("/") + "/video"
         return ThreadedStreamSource(
-            stream_target=uri_str,
+            stream_target=target,
             is_network=True,
             fallback_source=fallback_src
         )
@@ -384,6 +388,8 @@ def create_frame_source(
         "fall": "demo_clips/demo_fall.mp4",
         "jump": "demo_clips/demo_jump.mp4",
         "distress": "demo_clips/demo_distress.mp4",
+        "distress1": "demo_clips/whatsapp_distress_1.mp4",
+        "distress2": "demo_clips/whatsapp_distress_2.mp4",
         "synthetic": "demo_clips/demo_fall.mp4"
     }
     if uri_str.lower() in alias_map and Path(alias_map[uri_str.lower()]).exists():

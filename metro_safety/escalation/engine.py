@@ -126,7 +126,7 @@ class EscalationEngine:
         # 1. Silent Distress Gesture
         if ev_type == EventType.DISTRESS_GESTURE:
             severity = SeverityLevel.DISTRESS
-            action_msg = "Silent distress alarm dispatched to station security and control room."
+            action_msg = "HIGH SEVERITY: Silent distress gesture detected! Dispatching platform security and control room."
             buzzer_active = False  # STRICT REQUIREMENT: NO audible buzzer to protect victim
             cr_alert = self._safe_send_alert(event, severity, action_msg)
 

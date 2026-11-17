@@ -4061,7 +4061,7 @@
               const baseLabel = EVENT_TYPE_LABELS[cleanType] || cleanType;
               const classification = isDemo ? `[SIMULATION] ${baseLabel}` : baseLabel;
               const sev = ev.severity || 'L1';
-              const sevLabel = sev === 'L3' ? 'CRITICAL' : sev === 'L2' ? 'HIGH' : sev === 'L1' ? 'MEDIUM' : 'LOW';
+              const sevLabel = (sev === 'L3' || sev === 'CRITICAL') ? 'CRITICAL' : (sev === 'L2' || sev === 'DISTRESS' || sev === 'HIGH') ? 'HIGH' : sev === 'L1' ? 'MEDIUM' : 'LOW';
               const snapUrl = ev.snapshot_url || (ev.id ? `/api/snapshots/${ev.id}.jpg` : null);
               const snapImg = ev.snapshot_data || ev.snapshot_crop || snapUrl || 'assets/cam101_rajiv_chowk.jpg';
               const isResolved = window._resolvedEventIds && window._resolvedEventIds.has(ev.id);

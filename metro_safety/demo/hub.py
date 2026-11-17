@@ -627,6 +627,10 @@ class LiveHub:
         if "platform_id" not in event_record:
             event_record["platform_id"] = self.platform_id
 
+        # Distress gestures are high priority alerts
+        if event_record.get("severity") == "DISTRESS" or "DISTRESS" in str(event_record.get("event_type", "")).upper():
+            event_record["severity"] = "HIGH"
+
         # Auto-capture incident snapshot if missing or if frame is provided
         if frame is not None or not event_record.get("snapshot_url"):
             target_source = frame if frame is not None else self._latest_jpeg

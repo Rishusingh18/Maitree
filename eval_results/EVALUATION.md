@@ -2,10 +2,10 @@
 
 ## 1. Executive Summary & Target Comparison
 - **DMRC Baseline Specification**: > 90% Detection Accuracy for track intrusion & safety line crossing.
-- **Rule-Based State Machine Accuracy**: **94.40%** (Target Met: **YES**)
+- **Rule-Based State Machine Accuracy**: **87.93%** (Target Met: **NO**)
 - **Learned Temporal Classifier (GBDT) Accuracy**: **100.00%** (Target Met: **YES**)
-- **Mean Pipeline Processing Speed**: **481.3 FPS** on CPU (Near real-time capable).
-- **Mean End-to-End Decision Latency**: **0.24 ms** (95th percentile: **0.79 ms**).
+- **Mean Classifier Throughput**: **447.6 FPS** on CPU (Near real-time capable).
+- **Mean End-to-End Decision Latency**: **0.39 ms** (95th percentile: **1.04 ms**).
 - **False Alert Rate on Normal CCTV Footage**: **0.00 false alerts/hour**.
 
 ---
@@ -15,11 +15,11 @@
 ### Rule-Based State Machine
 | Event Class | Precision | Recall | F1-Score | Support |
 |---|---|---|---|---|
-| **NORMAL** | 0.877 | 1.000 | 0.935 | 100.0 |
+| **NORMAL** | 0.741 | 1.000 | 0.851 | 100.0 |
 | **LINE_CROSSING** | 1.000 | 1.000 | 1.000 | 50.0 |
 | **ACCIDENTAL_FALL** | 1.000 | 1.000 | 1.000 | 50.0 |
-| **DELIBERATE_JUMP** | 1.000 | 0.720 | 0.837 | 50.0 |
-| **Overall Accuracy** | - | - | **0.944** | 250 |
+| **DELIBERATE_JUMP** | 1.000 | 0.700 | 0.824 | 50.0 |
+| **Overall Accuracy** | - | - | **0.879** | 290 |
 
 ### Learned Temporal Classifier (Gradient Boosting)
 | Event Class | Precision | Recall | F1-Score | Support |
