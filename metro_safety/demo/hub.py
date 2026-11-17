@@ -585,21 +585,25 @@ class LiveHub:
                 mtime = TELEMETRY_CACHE_PATH.stat().st_mtime
                 if (time.time() - mtime) < 4.0:
                     cached = json.loads(TELEMETRY_CACHE_PATH.read_text())
-                    cached_pid = cached.get("producer_pid")
-                    if cached_pid is not None and cached_pid != os.getpid() and _is_pid_alive(cached_pid):
-                        for k in ["live_fps", "detector_fps", "live_latency_ms", "is_fallback", "source_target", "retry_status", "adaptive_zones", "session_id", "geofence_active", "camera_motion", "camera_motion_reason"]:
-                            if k in cached:
-                                res[k] = cached[k]
-                        if "train_state" in cached:
-                            if not getattr(self, "_explicit_train_state", False):
-                                res["train_state"] = cached["train_state"]
-                        if "ets_status" in cached:
-                            if not getattr(self, "_explicit_ets_status", False) and getattr(self, "ets_status", "") != "UNKNOWN":
-                                res["ets_status"] = cached["ets_status"]
-                        if "is_online" in cached:
-                            res["is_online"] = bool(cached["is_online"])
-                        else:
-                            res["is_online"] = True
+                    cached_cctv = cached.get("cctv_id")
+                    if not (cached_cctv and self.cctv_id and cached_cctv != self.cctv_id):
+                        cached_pid = cached.get("producer_pid")
+                        if cached_pid is not None and cached_pid != os.getpid() and _is_pid_alive(cached_pid):
+                            for k in ["live_fps", "detector_fps", "live_latency_ms", "is_fallback", "source_target", "retry_status", "adaptive_zones", "session_id", "geofence_active", "camera_motion", "camera_motion_reason"]:
+                                if k == "session_id" and len(self.events_history) > 0:
+                                    continue
+                                if k in cached:
+                                    res[k] = cached[k]
+                            if "train_state" in cached:
+                                if not getattr(self, "_explicit_train_state", False):
+                                    res["train_state"] = cached["train_state"]
+                            if "ets_status" in cached:
+                                if not getattr(self, "_explicit_ets_status", False) and getattr(self, "ets_status", "") != "UNKNOWN":
+                                    res["ets_status"] = cached["ets_status"]
+                            if "is_online" in cached:
+                                res["is_online"] = bool(cached["is_online"])
+                            else:
+                                res["is_online"] = True
             except Exception:
                 pass
 

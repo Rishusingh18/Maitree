@@ -23,7 +23,7 @@ from backend.app.main import app as fastapi_app
 def run_vision_loop(stop_event: threading.Event, source_uri: str = None, config_path: str = None):
     """Runs the ML Computer Vision inference loop in a background thread."""
     cfg = load_config(config_path)
-    source = source_uri or os.environ.get("METRO_SOURCE_OVERRIDE") or cfg["system"].get("source", "http://192.0.0.4:8080/video")
+    source = source_uri or os.environ.get("METRO_SOURCE_OVERRIDE") or cfg["system"].get("source", "http://10.243.108.190:8080/video")
     print(f"[ML Pipeline] Initializing camera source: {source}")
 
     try:

@@ -1,9 +1,10 @@
 import os
 import time
+import asyncio
 import logging
 from typing import Optional, Dict, Any
 from pathlib import Path
-from fastapi import FastAPI, Request, Response, Depends, File, UploadFile, Form
+from fastapi import FastAPI, Request, Response, Depends, File, UploadFile, Form, Query
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -193,6 +194,8 @@ async def confirm_zones_get():
         status_code=405
     )
 
+_BUILTIN_DEMO_CLIPS = {"demo_fall.mp4", "demo_jump.mp4", "demo_distress.mp4"}
+
 @app.post("/api/video/upload", tags=["Video Forensics"])
 @app.post("/api/upload_video", tags=["Video Forensics"])
 async def upload_video(
@@ -204,53 +207,85 @@ async def upload_video(
     and register detected safety incidents into the LiveHub security audit log.
     """
     try:
-        import importlib
-        import metro_safety.tools.video_processor
-        importlib.reload(metro_safety.tools.video_processor)
         from metro_safety.tools.video_processor import process_uploaded_video
         uploads_dir = Path("data/uploads")
         uploads_dir.mkdir(parents=True, exist_ok=True)
         safe_name = os.path.basename(file.filename or "video.mp4")
         temp_path = uploads_dir / f"raw_{int(time.time()*1000)}_{safe_name}"
 
+        bytes_written = 0
         with open(temp_path, "wb") as f:
             while chunk := await file.read(1024 * 1024):
                 f.write(chunk)
+                bytes_written += len(chunk)
 
-        result = process_uploaded_video(
+        if bytes_written == 0:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return JSONResponse({"status": "error", "message": "Uploaded video file is empty."}, status_code=400)
+
+        result = await asyncio.to_thread(
+            process_uploaded_video,
             input_path=temp_path,
             original_filename=safe_name,
             register_to_hub=register_events,
             platform_id=platform_id
         )
         return JSONResponse(result)
+    except RuntimeError as e:
+        logger.warning(f"Invalid video upload: {e}")
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=400)
     except Exception as e:
-        logger.error(f"Error processing uploaded video: {e}")
+        logger.error(f"Error processing uploaded video: {e}", exc_info=True)
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 @app.post("/api/video/demo/{clip_name}", tags=["Video Forensics"])
-async def run_demo_clip(clip_name: str, register_events: bool = True, platform_id: Optional[str] = None):
+async def run_demo_clip(
+    clip_name: str,
+    request: Request,
+    register_events: Optional[bool] = Query(None),
+    platform_id: Optional[str] = Query(None)
+):
     """Process an internal demo clip (e.g. demo_fall.mp4, demo_jump.mp4, demo_distress.mp4) without uploading."""
     try:
-        import importlib
-        import metro_safety.tools.video_processor
-        importlib.reload(metro_safety.tools.video_processor)
         from metro_safety.tools.video_processor import process_uploaded_video
+        reg_flag = True if register_events is None else bool(register_events)
+        plat_val = platform_id
+
+        # Also support multipart/form-data fields sent by the frontend UI
+        content_type = request.headers.get("content-type", "")
+        if "multipart/form-data" in content_type or "application/x-www-form-urlencoded" in content_type:
+            form = await request.form()
+            if "register_events" in form:
+                reg_flag = str(form.get("register_events", "true")).lower() in ("true", "1", "yes", "on")
+            if "platform_id" in form and form.get("platform_id"):
+                plat_val = str(form.get("platform_id"))
+
         safe_name = os.path.basename(clip_name)
         if not safe_name.endswith(".mp4"):
             safe_name += ".mp4"
         clip_path = Path("demo_clips") / safe_name
+
+        # Auto-generate built-in demo clips if missing on a fresh checkout
+        if not clip_path.exists() and safe_name in _BUILTIN_DEMO_CLIPS:
+            from metro_safety.demo.generate_clips import generate_demo_clips
+            await asyncio.to_thread(generate_demo_clips, "demo_clips")
+
         if not clip_path.exists():
             return JSONResponse({"status": "error", "message": f"Demo clip '{safe_name}' not found"}, status_code=404)
-        result = process_uploaded_video(
+
+        result = await asyncio.to_thread(
+            process_uploaded_video,
             input_path=clip_path,
             original_filename=safe_name,
-            register_to_hub=register_events,
-            platform_id=platform_id
+            register_to_hub=reg_flag,
+            platform_id=plat_val
         )
         return JSONResponse(result)
     except Exception as e:
-        logger.error(f"Error running demo clip: {e}")
+        logger.error(f"Error running demo clip: {e}", exc_info=True)
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 @app.get("/api/processed_stream/{video_id}", tags=["Video Forensics"])
@@ -275,10 +310,13 @@ def get_processed_video(video_id: str):
 def get_processed_frame(video_id: str, frame_num: int = 0):
     """Return a single annotated JPEG frame from the processed video."""
     from metro_safety.tools.video_processor import PROCESSED_FRAME_CACHE
-    frames = PROCESSED_FRAME_CACHE.get(video_id)
+    safe_id = os.path.basename(video_id).strip()
+    if frame_num < 0:
+        return Response(content=b"Invalid frame number", status_code=400)
+    frames = PROCESSED_FRAME_CACHE.get(safe_id)
     if frames and 0 <= frame_num < len(frames):
         return Response(content=frames[frame_num], media_type="image/jpeg")
-    frame_path = Path("data/uploads") / f"frames_{video_id}" / f"f_{frame_num:05d}.jpg"
+    frame_path = Path("data/uploads") / f"frames_{safe_id}" / f"f_{frame_num:05d}.jpg"
     if frame_path.exists():
         return Response(content=frame_path.read_bytes(), media_type="image/jpeg")
     return Response(content=b"Frame not found", status_code=404)

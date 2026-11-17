@@ -44,19 +44,22 @@ COCO_PAIRS = [
 # Global cache of processed video frames for MJPEG streaming: video_id -> List[bytes]
 PROCESSED_FRAME_CACHE: Dict[str, List[bytes]] = {}
 PROCESSED_METADATA_CACHE: Dict[str, Dict[str, Any]] = {}
+_TRAIN_PROBE_YOLO = None
+_TRAIN_PROBE_CHECKED = False
 
 
 def get_cached_processed_stream(video_id: str):
     """Generator for streaming processed video frames as MJPEG."""
-    frames = PROCESSED_FRAME_CACHE.get(video_id, [])
+    safe_id = os.path.basename(str(video_id)).strip()
+    frames = PROCESSED_FRAME_CACHE.get(safe_id, [])
     if not frames:
         # If not in memory, try to load from disk frames directory if available
-        frames_dir = Path("data/uploads") / f"frames_{video_id}"
+        frames_dir = Path("data/uploads") / f"frames_{safe_id}"
         if frames_dir.exists():
             img_files = sorted(frames_dir.glob("*.jpg"))
             frames = [p.read_bytes() for p in img_files]
             if frames:
-                PROCESSED_FRAME_CACHE[video_id] = frames
+                PROCESSED_FRAME_CACHE[safe_id] = frames
 
     if not frames:
         # Yield single placeholder error frame
@@ -67,13 +70,44 @@ def get_cached_processed_stream(video_id: str):
         yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n")
         return
 
+    meta = PROCESSED_METADATA_CACHE.get(safe_id, {})
+    fps = float(meta.get("fps") or 25.0)
+    frame_delay = 1.0 / max(5.0, min(30.0, fps))
+
     # Loop frames continuously for smooth playback in browser
     idx = 0
-    while True:
-        frame_bytes = frames[idx % len(frames)]
-        yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
-        idx += 1
-        time.sleep(0.04)  # ~25 FPS
+    try:
+        while True:
+            frame_bytes = frames[idx % len(frames)]
+            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
+            idx += 1
+            time.sleep(frame_delay)
+    except GeneratorExit:
+        return
+
+
+def _get_train_probe_model():
+    """Return cached local yolov8n.pt model if available without triggering slow offline downloads."""
+    global _TRAIN_PROBE_YOLO, _TRAIN_PROBE_CHECKED
+    if _TRAIN_PROBE_CHECKED:
+        return _TRAIN_PROBE_YOLO
+    _TRAIN_PROBE_CHECKED = True
+
+    candidate_paths = [
+        Path("yolov8n.pt"),
+        Path("backend/models/yolov8n.pt"),
+    ]
+    local_path = next((p for p in candidate_paths if p.is_file()), None)
+    if local_path is None:
+        logger.debug("[VideoProcessor] Local yolov8n.pt not found; skipping optional train probe.")
+        return None
+    try:
+        from ultralytics import YOLO
+        _TRAIN_PROBE_YOLO = YOLO(str(local_path))
+    except Exception as e:
+        logger.warning(f"[VideoProcessor] Could not load train probe model {local_path}: {e}")
+        _TRAIN_PROBE_YOLO = None
+    return _TRAIN_PROBE_YOLO
 
 
 def probe_video_scenario(
@@ -88,26 +122,26 @@ def probe_video_scenario(
     train_state = TrainState.ABSENT
 
     try:
-        from ultralytics import YOLO
-        yolo = YOLO("yolov8n.pt")
-        for f_i in range(sample_frames):
-            ret, frame = cap.read()
-            if not ret or frame is None:
-                break
-            res = yolo(frame, verbose=False)[0]
-            for b in res.boxes:
-                cls = int(b.cls[0])
-                conf = float(b.conf[0])
-                if (cls == 6 or res.names[cls] == 'train') and conf > 0.35:
-                    bx = b.xyxy[0].cpu().numpy()
-                    area = (bx[2] - bx[0]) * (bx[3] - bx[1])
-                    if area > 0.04 * w * h:
-                        train_box = tuple(bx)
-                        detected_train = True
-                        train_state = TrainState.STOPPED_DOORS_OPEN
-                        break
-            if detected_train:
-                break
+        yolo = _get_train_probe_model()
+        if yolo is not None:
+            for _ in range(sample_frames):
+                ret, frame = cap.read()
+                if not ret or frame is None:
+                    break
+                res = yolo(frame, verbose=False)[0]
+                for b in res.boxes:
+                    cls = int(b.cls[0])
+                    conf = float(b.conf[0])
+                    if (cls == 6 or res.names[cls] == 'train') and conf > 0.35:
+                        bx = b.xyxy[0].cpu().numpy()
+                        area = (bx[2] - bx[0]) * (bx[3] - bx[1])
+                        if area > 0.04 * w * h:
+                            train_box = tuple(bx)
+                            detected_train = True
+                            train_state = TrainState.STOPPED_DOORS_OPEN
+                            break
+                if detected_train:
+                    break
     except Exception as e:
         logger.warning(f"[VideoProcessor] Train detection probe failed: {e}")
 
@@ -143,276 +177,317 @@ def process_uploaded_video(
     if not cap.isOpened():
         raise RuntimeError(f"Could not open input video: {input_path}")
 
-    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-    # Dynamic Train & Scenario POV Inspection
-    current_train_state, train_box, pov = probe_video_scenario(cap, w, h)
-    logger.info(f"[VideoProcessor] Video probe: train_state={current_train_state}, pov={pov}, train_box={train_box}")
-
-    # Determine scenario-aware polygon zones
-    scaled_zones: Dict[str, List[List[float]]] = {}
-    if current_train_state in (TrainState.STOPPED_DOORS_OPEN, TrainState.PRESENT) or pov is not None:
-        scaled_zones = estimate_scenario_zones(w, h, train_box=train_box, pov_hint=pov)
-
-    if len(scaled_zones) < 4:
-        raw_zones = cfg.get("zones", {})
-        ref_w, ref_h = 1920.0, 1080.0
-        sx, sy = float(w) / ref_w, float(h) / ref_h
-        for zname, pts in raw_zones.items():
-            if pts and len(pts) >= 3:
-                scaled_zones[zname] = [[round(p[0] * sx, 1), round(p[1] * sy, 1)] for p in pts]
-        if len(scaled_zones) < 4:
-            scaled_zones = estimate_scenario_zones(w, h)
-
-    zm = ZoneManager(scaled_zones)
-
-    # Initialize detectors & classifiers
-    pose_detector = YOLOPoseDetector(
-        model_name=cfg["perception"].get("model_name", "yolov8n-pose.pt"),
-        confidence_threshold=cfg["perception"].get("confidence_threshold", 0.18),
-        device=cfg["perception"].get("device", "cpu")
-    )
-    tracker = ByteTracker(
-        track_high_thresh=cfg["tracking"].get("track_high_thresh", 0.22),
-        track_low_thresh=cfg["tracking"].get("track_low_thresh", 0.12),
-        new_track_thresh=cfg["tracking"].get("new_track_thresh", 0.18),
-        track_buffer=cfg["tracking"].get("track_buffer", 30),
-        match_thresh=cfg["tracking"].get("match_thresh", 0.6)
-    )
-    rule_clf = RuleBasedEventClassifier(
-        line_crossing_thresh=cfg["events"]["line_crossing_consecutive_frames"],
-        track_intrusion_thresh=cfg["events"]["track_intrusion_consecutive_frames"],
-        fall_drop_vel_thresh=cfg["events"].get("fall_drop_velocity_threshold", 14.0),
-        fall_angle_thresh=cfg["events"].get("fall_angle_threshold", 40.0),
-        jump_vel_thresh=cfg["events"].get("jump_vertical_velocity_threshold", 12.0),
-        min_event_frames=cfg["events"].get("min_motion_duration_frames", 4),
-        min_drop_displacement=cfg["events"].get("fall_min_displacement_px", 10.0),
-        min_jump_displacement=cfg["events"].get("jump_min_displacement_px", 8.0)
-    )
-    gesture_det = DistressGestureDetector(
-        min_persistence=cfg["gesture"]["min_persistence_frames"],
-        use_macro_fallback=cfg["gesture"]["use_macro_fallback"]
-    )
-    escalation = EscalationEngine(
-        station_id=cfg["system"].get("station_id", "DMRC_STN_042"),
-        platform_id=platform_id or cfg["system"].get("platform_id", "PL_DOWN_01")
-    )
-
+    writer = None
+    t_proc_start = time.perf_counter()
     try:
-        from metro_safety.anomaly.engine import AnomalyEngine
-        anomaly_engine = AnomalyEngine(cfg)
-    except Exception:
-        anomaly_engine = None
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        if not math.isfinite(fps) or fps <= 0:
+            fps = 25.0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if w <= 0 or h <= 0:
+            raise RuntimeError(f"Invalid video dimensions ({w}x{h}) for {original_filename}")
 
-    hub = get_global_hub()
+        # Dynamic Train & Scenario POV Inspection
+        current_train_state, train_box, pov = probe_video_scenario(cap, w, h)
+        logger.info(f"[VideoProcessor] Video probe: train_state={current_train_state}, pov={pov}, train_box={train_box}")
 
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    writer = cv2.VideoWriter(str(out_video_path), fourcc, fps, (w, h))
+        # Determine scenario-aware polygon zones
+        scaled_zones: Dict[str, List[List[float]]] = {}
+        if current_train_state in (TrainState.STOPPED_DOORS_OPEN, TrainState.PRESENT) or pov is not None:
+            scaled_zones = estimate_scenario_zones(w, h, train_box=train_box, pov_hint=pov)
 
-    detected_incidents: List[Dict[str, Any]] = []
-    registered_event_types: set = set()
-    frame_bytes_list: List[bytes] = []
+        if len(scaled_zones) < 4:
+            raw_zones = cfg.get("zones", {})
+            ref_w, ref_h = 1920.0, 1080.0
+            sx, sy = float(w) / ref_w, float(h) / ref_h
+            for zname, pts in raw_zones.items():
+                if pts and len(pts) >= 3:
+                    scaled_zones[zname] = [[round(p[0] * sx, 1), round(p[1] * sy, 1)] for p in pts]
+            if len(scaled_zones) < 4:
+                scaled_zones = estimate_scenario_zones(w, h)
 
-    frame_idx = 0
-    is_train_docked = current_train_state in (TrainState.STOPPED_DOORS_OPEN, TrainState.PRESENT)
+        zm = ZoneManager(scaled_zones)
+        resolved_station = cfg["system"].get("station_id", "DMRC_STN_042")
+        resolved_platform = platform_id or cfg["system"].get("platform_id", "PL_DOWN_01")
 
-    while True:
-        ret, frame = cap.read()
-        if not ret or frame is None:
-            break
-
-        frame_ts = float(frame_idx) / float(fps)
-        time_str = time.strftime("%H:%M:%S", time.gmtime(frame_ts))
-
-        # 1. Detection (YOLO with fallback for simulated synthetic clips)
-        detections = []
-        if pose_detector and pose_detector._model is not None:
-            detections = pose_detector.detect(frame)
-
-        if not detections:
-            # Fallback synthetic detection for simulated test clips
-            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-            mask = cv2.inRange(hsv, np.array([10, 150, 150]), np.array([25, 255, 255]))
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            pts = []
-            for cnt in contours:
-                if 2 <= cv2.contourArea(cnt) <= 120:
-                    M = cv2.moments(cnt)
-                    if M["m00"] > 0:
-                        pts.append([M["m10"] / M["m00"], M["m01"] / M["m00"], 0.9])
-            if len(pts) >= 6:
-                pts_arr = np.array(pts)
-                x1, y1 = np.min(pts_arr[:, 0]) - 15, np.min(pts_arr[:, 1]) - 20
-                x2, y2 = np.max(pts_arr[:, 0]) + 15, np.max(pts_arr[:, 1]) + 15
-                box = np.array([x1, y1, x2, y2], dtype=np.float32)
-                kpts = np.zeros((17, 3), dtype=np.float32)
-                for ki in range(17):
-                    kpts[ki] = [np.mean(pts_arr[:, 0]), np.mean(pts_arr[:, 1]), 0.8]
-                if len(pts) >= 15:
-                    sorted_by_y = pts_arr[np.argsort(pts_arr[:, 1])]
-                    kpts[0] = sorted_by_y[0]
-                    kpts[15] = sorted_by_y[-2]
-                    kpts[16] = sorted_by_y[-1]
-                detections = [Detection(box=box, confidence=0.92, keypoints=kpts)]
-
-        # 2. Tracking
-        tracked_dets = tracker.update(detections)
-
-        # 3. Classifications & Anomaly Detection (using dynamic train state)
-        rule_evs = rule_clf.process_frame(
-            frame_idx,
-            frame_ts,
-            tracked_dets,
-            zm,
-            current_train_state,
-            camera_motion=False,
-            motion_reason="Stable"
+        # Initialize detectors & classifiers
+        pose_detector = YOLOPoseDetector(
+            model_name=cfg["perception"].get("model_name", "yolov8n-pose.pt"),
+            confidence_threshold=cfg["perception"].get("confidence_threshold", 0.18),
+            device=cfg["perception"].get("device", "cpu")
         )
-        gesture_evs = gesture_det.process_frame(frame_idx, frame_ts, tracked_dets, zm, current_train_state)
-        anomaly_evs = []
-        if anomaly_engine is not None:
-            anomaly_evs = anomaly_engine.process_frame(
-                frame=frame,
-                frame_idx=frame_idx,
-                person_detections=tracked_dets,
-                zone_manager=zm,
-                train_state=current_train_state.name
+        tracker = ByteTracker(
+            track_high_thresh=cfg["tracking"].get("track_high_thresh", 0.22),
+            track_low_thresh=cfg["tracking"].get("track_low_thresh", 0.12),
+            new_track_thresh=cfg["tracking"].get("new_track_thresh", 0.18),
+            track_buffer=cfg["tracking"].get("track_buffer", 30),
+            match_thresh=cfg["tracking"].get("match_thresh", 0.6)
+        )
+        rule_clf = RuleBasedEventClassifier(
+            line_crossing_thresh=cfg["events"]["line_crossing_consecutive_frames"],
+            track_intrusion_thresh=cfg["events"]["track_intrusion_consecutive_frames"],
+            fall_drop_vel_thresh=cfg["events"].get("fall_drop_velocity_threshold", 14.0),
+            fall_angle_thresh=cfg["events"].get("fall_angle_threshold", 40.0),
+            jump_vel_thresh=cfg["events"].get("jump_vertical_velocity_threshold", 12.0),
+            min_event_frames=cfg["events"].get("min_motion_duration_frames", 4),
+            min_drop_displacement=cfg["events"].get("fall_min_displacement_px", 10.0),
+            min_jump_displacement=cfg["events"].get("jump_min_displacement_px", 8.0)
+        )
+        gesture_det = DistressGestureDetector(
+            min_persistence=cfg["gesture"]["min_persistence_frames"],
+            use_macro_fallback=cfg["gesture"]["use_macro_fallback"]
+        )
+        escalation = EscalationEngine(
+            station_id=resolved_station,
+            platform_id=resolved_platform
+        )
+
+        try:
+            from metro_safety.anomaly.engine import AnomalyEngine
+            anomaly_engine = AnomalyEngine(cfg)
+        except Exception:
+            anomaly_engine = None
+
+        hub = get_global_hub()
+
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        writer = cv2.VideoWriter(str(out_video_path), fourcc, fps, (w, h))
+
+        detected_incidents: List[Dict[str, Any]] = []
+        registered_event_types: set = set()
+        frame_bytes_list: List[bytes] = []
+
+        frame_idx = 0
+        is_train_docked = current_train_state in (TrainState.STOPPED_DOORS_OPEN, TrainState.PRESENT)
+
+        while True:
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                break
+
+            frame_ts = float(frame_idx) / float(fps)
+            time_str = time.strftime("%H:%M:%S", time.gmtime(frame_ts))
+
+            # 1. Detection (YOLO with fallback for simulated synthetic clips)
+            detections = []
+            if pose_detector and pose_detector._model is not None:
+                detections = pose_detector.detect(frame)
+
+            if not detections:
+                # Fallback synthetic detection for simulated test clips
+                hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+                mask = cv2.inRange(hsv, np.array([10, 150, 150]), np.array([25, 255, 255]))
+                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                pts = []
+                for cnt in contours:
+                    if 2 <= cv2.contourArea(cnt) <= 120:
+                        M = cv2.moments(cnt)
+                        if M["m00"] > 0:
+                            pts.append([M["m10"] / M["m00"], M["m01"] / M["m00"], 0.9])
+                if len(pts) >= 6:
+                    pts_arr = np.array(pts)
+                    x1, y1 = np.min(pts_arr[:, 0]) - 15, np.min(pts_arr[:, 1]) - 20
+                    x2, y2 = np.max(pts_arr[:, 0]) + 15, np.max(pts_arr[:, 1]) + 15
+                    box = np.array([x1, y1, x2, y2], dtype=np.float32)
+                    kpts = np.zeros((17, 3), dtype=np.float32)
+                    for ki in range(17):
+                        kpts[ki] = [np.mean(pts_arr[:, 0]), np.mean(pts_arr[:, 1]), 0.8]
+                    if len(pts) >= 15:
+                        sorted_by_y = pts_arr[np.argsort(pts_arr[:, 1])]
+                        kpts[0] = sorted_by_y[0]
+                        kpts[15] = sorted_by_y[-2]
+                        kpts[16] = sorted_by_y[-1]
+                    detections = [Detection(box=box, confidence=0.92, keypoints=kpts)]
+
+            # 2. Tracking
+            tracked_dets = tracker.update(detections)
+
+            # 3. Classifications & Anomaly Detection (using dynamic train state)
+            rule_evs = rule_clf.process_frame(
+                frame_idx,
+                frame_ts,
+                tracked_dets,
+                zm,
+                current_train_state,
+                camera_motion=False,
+                motion_reason="Stable"
+            )
+            gesture_evs = gesture_det.process_frame(frame_idx, frame_ts, tracked_dets, zm, current_train_state)
+            anomaly_evs = []
+            if anomaly_engine is not None:
+                anomaly_evs = anomaly_engine.process_frame(
+                    frame=frame,
+                    frame_idx=frame_idx,
+                    person_detections=tracked_dets,
+                    zone_manager=zm,
+                    train_state=current_train_state.name
+                )
+
+            all_evs = rule_evs + gesture_evs + anomaly_evs
+            if is_train_docked:
+                from metro_safety.events.rule_classifier import EventType
+                all_evs = [ev for ev in all_evs if ev.event_type not in (EventType.TRACK_INTRUSION, EventType.DELIBERATE_JUMP, EventType.LINE_CROSSING)]
+            current_decision = None
+
+            # Map track_id -> normalized percentage bbox for forensic overlays
+            track_boxes: Dict[int, Dict[str, str]] = {}
+            for det in tracked_dets:
+                if det.track_id is not None and det.box is not None:
+                    bx = det.box
+                    left_pct = max(0.0, min(95.0, float(bx[0]) / float(w) * 100.0))
+                    top_pct = max(0.0, min(95.0, float(bx[1]) / float(h) * 100.0))
+                    width_pct = max(4.0, min(100.0 - left_pct, float(bx[2] - bx[0]) / float(w) * 100.0))
+                    height_pct = max(4.0, min(100.0 - top_pct, float(bx[3] - bx[1]) / float(h) * 100.0))
+                    track_boxes[int(det.track_id)] = {
+                        "top": f"{top_pct:.1f}%",
+                        "left": f"{left_pct:.1f}%",
+                        "width": f"{width_pct:.1f}%",
+                        "height": f"{height_pct:.1f}%"
+                    }
+
+            # Evaluate escalation & register events
+            for ev in all_evs:
+                dec = escalation.evaluate(event=ev, train_state=current_train_state, current_time=frame_ts)
+                _sev_rank = {'NORMAL': 0, 'L1': 1, 'DISTRESS': 2, 'L2': 3, 'L3': 4}
+                _dec_s = dec.severity.name if hasattr(dec.severity, 'name') else str(dec.severity)
+                if current_decision is None:
+                    current_decision = dec
+                else:
+                    _curr_s = current_decision.severity.name if hasattr(current_decision.severity, 'name') else str(current_decision.severity)
+                    if _sev_rank.get(_dec_s, 0) > _sev_rank.get(_curr_s, 0):
+                        current_decision = dec
+
+                # Deduplicate by (event_type, track_id) to avoid flooding identical events
+                dedup_key = (ev.event_type.value, ev.track_id or 0)
+                if dedup_key not in registered_event_types:
+                    registered_event_types.add(dedup_key)
+
+                    sev_name = dec.severity.name if dec else "L1"
+                    ev_id = f"EV-UPL-{int(time.time()*1000)}-{ev.track_id or 0}-{ev.event_type.value}"
+
+                    rec = {
+                        "id": ev_id,
+                        "timestamp": time.time(),
+                        "time_str": time_str,
+                        "frame_idx": frame_idx,
+                        "frame_index": frame_idx,
+                        "video_id": video_id,
+                        "track_id": ev.track_id or 0,
+                        "event_type": ev.event_type.value,
+                        "severity": sev_name,
+                        "zone": ev.zone or "platform",
+                        "station_id": resolved_station,
+                        "platform_id": resolved_platform,
+                        "confidence": round(float(ev.confidence), 2),
+                        "action": dec.action_taken if dec else "Threat detected in uploaded footage",
+                        "source": f"Upload: {original_filename}",
+                        "cctv_id": f"UPLOAD-{video_id[:8]}",
+                        "registered_to_hub": bool(register_to_hub),
+                        "bbox": track_boxes.get(int(ev.track_id or 0))
+                    }
+
+                    if register_to_hub:
+                        hub.push_event(rec, frame=frame)
+                        rec["snapshot_url"] = rec.get("snapshot_url") or f"/api/snapshots/{ev_id}.jpg"
+                    else:
+                        snap_info = save_incident_snapshot(ev_id, frame)
+                        if snap_info:
+                            rec.update(snap_info)
+                        rec["snapshot_url"] = rec.get("snapshot_url") or f"/api/snapshots/{ev_id}.jpg"
+
+                    detected_incidents.append(rec)
+
+            # 4. Render Visual Overlays
+            # A. Safety Zone Polygons
+            annotated = zm.draw_zones(
+                frame,
+                alpha=0.28,
+                unverified=False,
+                draw_baseline=True,
+                status_badge=f"VIDEO ANALYSIS | FRAME {frame_idx}/{total_frames} | {time_str}"
             )
 
-        all_evs = rule_evs + gesture_evs + anomaly_evs
-        if is_train_docked:
-            from metro_safety.events.rule_classifier import EventType
-            all_evs = [ev for ev in all_evs if ev.event_type not in (EventType.TRACK_INTRUSION, EventType.DELIBERATE_JUMP, EventType.LINE_CROSSING)]
-        current_decision = None
+            # B. Person Bounding Boxes & Skeletons
+            for det in tracked_dets:
+                bx = det.box.astype(int)
+                tid = det.track_id or 0
+                foot = det.foot_anchor
+                zone_name = zm.get_zone_for_point(foot)
 
-        # Evaluate escalation & register events
-        for ev in all_evs:
-            dec = escalation.evaluate(event=ev, train_state=current_train_state, current_time=frame_ts)
-            _sev_rank = {'NORMAL': 0, 'L1': 1, 'DISTRESS': 2, 'L2': 3, 'L3': 4}
-            _dec_s = dec.severity.name if hasattr(dec.severity, 'name') else str(dec.severity)
-            if current_decision is None:
-                current_decision = dec
-            else:
-                _curr_s = current_decision.severity.name if hasattr(current_decision.severity, 'name') else str(current_decision.severity)
-                if _sev_rank.get(_dec_s, 0) > _sev_rank.get(_curr_s, 0):
-                    current_decision = dec
-
-            # Deduplicate by (event_type, track_id) to avoid flooding identical events
-            dedup_key = (ev.event_type.value, ev.track_id or 0)
-            if dedup_key not in registered_event_types:
-                registered_event_types.add(dedup_key)
-
-                sev_name = dec.severity.name if dec else "L1"
-                ev_id = f"EV-UPL-{int(time.time()*1000)}-{ev.track_id or 0}-{ev.event_type.value}"
-
-                rec = {
-                    "id": ev_id,
-                    "timestamp": time.time(),
-                    "time_str": time_str,
-                    "frame_idx": frame_idx,
-                    "video_id": video_id,
-                    "track_id": ev.track_id or 0,
-                    "event_type": ev.event_type.value,
-                    "severity": sev_name,
-                    "zone": ev.zone or "platform",
-                    "confidence": round(float(ev.confidence), 2),
-                    "action": dec.action_taken if dec else "Threat detected in uploaded footage",
-                    "source": f"Upload: {original_filename}",
-                    "cctv_id": f"UPLOAD-{video_id[:8]}"
-                }
-
-                if register_to_hub:
-                    hub.push_event(rec, frame=frame)
-                    rec["snapshot_url"] = f"/api/snapshots/{ev_id}.jpg"
-
-                detected_incidents.append(rec)
-
-        # 4. Render Visual Overlays
-        # A. Safety Zone Polygons
-        annotated = zm.draw_zones(
-            frame,
-            alpha=0.28,
-            unverified=False,
-            draw_baseline=True,
-            status_badge=f"VIDEO ANALYSIS | FRAME {frame_idx}/{total_frames} | {time_str}"
-        )
-
-        # B. Person Bounding Boxes & Skeletons
-        for det in tracked_dets:
-            bx = det.box.astype(int)
-            tid = det.track_id or 0
-            foot = det.foot_anchor
-            zone_name = zm.get_zone_for_point(foot)
-
-            if is_train_docked:
-                if zone_name in ["track_bed", "danger_zone", "yellow_band"]:
-                    box_color = (200, 200, 0)  # Cyan/Teal (BGR: 200, 200, 0)
-                    label_text = f"ID:{tid} [BOARDING]"
+                if is_train_docked:
+                    if zone_name in ["track_bed", "danger_zone", "yellow_band"]:
+                        box_color = (200, 200, 0)  # Cyan/Teal (BGR: 200, 200, 0)
+                        label_text = f"ID:{tid} [BOARDING]"
+                    else:
+                        box_color = (0, 200, 0)
+                        label_text = f"ID:{tid} [PLATFORM]"
                 else:
-                    box_color = (0, 200, 0)
-                    label_text = f"ID:{tid} [PLATFORM]"
-            else:
-                if zone_name in ["track_bed", "danger_zone"]:
-                    box_color = (0, 0, 255)
-                    label_text = f"ID:{tid} [{zone_name.upper()}]"
-                elif zone_name == "yellow_band":
-                    box_color = (0, 230, 255)
-                    label_text = f"ID:{tid} [YELLOW_BAND]"
-                else:
-                    box_color = (0, 200, 0)
-                    label_text = f"ID:{tid} [PLATFORM]"
+                    if zone_name in ["track_bed", "danger_zone"]:
+                        box_color = (0, 0, 255)
+                        label_text = f"ID:{tid} [{zone_name.upper()}]"
+                    elif zone_name == "yellow_band":
+                        box_color = (0, 230, 255)
+                        label_text = f"ID:{tid} [YELLOW_BAND]"
+                    else:
+                        box_color = (0, 200, 0)
+                        label_text = f"ID:{tid} [PLATFORM]"
 
-            cv2.rectangle(annotated, (bx[0], bx[1]), (bx[2], bx[3]), box_color, 2)
-            cv2.putText(annotated, label_text, (bx[0], max(18, bx[1] - 8)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.52, box_color, 2)
-            foot_color = (200, 200, 0) if (is_train_docked and zone_name != "platform") else ((0, 0, 255) if zone_name in ["track_bed", "danger_zone"] else (0, 255, 0))
-            cv2.circle(annotated, (int(foot[0]), int(foot[1])), 5, foot_color, -1)
+                cv2.rectangle(annotated, (bx[0], bx[1]), (bx[2], bx[3]), box_color, 2)
+                cv2.putText(annotated, label_text, (bx[0], max(18, bx[1] - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.52, box_color, 2)
+                foot_color = (200, 200, 0) if (is_train_docked and zone_name != "platform") else ((0, 0, 255) if zone_name in ["track_bed", "danger_zone"] else (0, 255, 0))
+                cv2.circle(annotated, (int(foot[0]), int(foot[1])), 5, foot_color, -1)
 
-            # Skeletons
-            if det.keypoints is not None:
-                for p1_i, p2_i in COCO_PAIRS:
-                    p1 = det.keypoints[p1_i]
-                    p2 = det.keypoints[p2_i]
-                    if p1[2] > 0.15 and p2[2] > 0.15:
-                        cv2.line(annotated, (int(p1[0]), int(p1[1])), (int(p2[0]), int(p2[1])), (0, 255, 255), 2)
-                for ki in range(17):
-                    kp = det.keypoints[ki]
-                    if kp[2] > 0.15:
-                        cv2.circle(annotated, (int(kp[0]), int(kp[1])), 3, (0, 200, 255), -1)
+                # Skeletons
+                if det.keypoints is not None:
+                    for p1_i, p2_i in COCO_PAIRS:
+                        p1 = det.keypoints[p1_i]
+                        p2 = det.keypoints[p2_i]
+                        if p1[2] > 0.15 and p2[2] > 0.15:
+                            cv2.line(annotated, (int(p1[0]), int(p1[1])), (int(p2[0]), int(p2[1])), (0, 255, 255), 2)
+                    for ki in range(17):
+                        kp = det.keypoints[ki]
+                        if kp[2] > 0.15:
+                            cv2.circle(annotated, (int(kp[0]), int(kp[1])), 3, (0, 200, 255), -1)
 
-        # C. Incident / Status Banner Overlay
-        if current_decision and current_decision.severity != SeverityLevel.NORMAL:
-            sev = current_decision.severity
-            banner_color = (0, 0, 220) if sev == SeverityLevel.L3 else ((0, 140, 255) if sev == SeverityLevel.L2 else (0, 220, 240))
-            cv2.rectangle(annotated, (0, 0), (w, 42), banner_color, -1)
-            banner_text = f"🚨 {sev.name}: {current_decision.action_taken}"
-            cv2.putText(annotated, banner_text[:80], (15, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 255, 255), 2)
-        elif is_train_docked:
-            cv2.rectangle(annotated, (0, 0), (w, 36), (20, 120, 40), -1)
-            banner_text = "PLATFORM SECURE | METRO DOCKED (DOORS OPEN) - NORMAL PASSENGER BOARDING"
-            cv2.putText(annotated, banner_text, (15, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.54, (255, 255, 255), 2)
+            # C. Incident / Status Banner Overlay
+            if current_decision and current_decision.severity != SeverityLevel.NORMAL:
+                sev = current_decision.severity
+                banner_color = (0, 0, 220) if sev == SeverityLevel.L3 else ((0, 140, 255) if sev == SeverityLevel.L2 else (0, 220, 240))
+                cv2.rectangle(annotated, (0, 0), (w, 42), banner_color, -1)
+                banner_text = f"[{sev.name}] {current_decision.action_taken}"
+                cv2.putText(annotated, banner_text[:80], (15, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 255, 255), 2)
+            elif is_train_docked:
+                cv2.rectangle(annotated, (0, 0), (w, 36), (20, 120, 40), -1)
+                banner_text = "PLATFORM SECURE | METRO DOCKED (DOORS OPEN) - NORMAL PASSENGER BOARDING"
+                cv2.putText(annotated, banner_text, (15, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.54, (255, 255, 255), 2)
 
-        # Write to output MP4
+            # Write to output MP4
+            if writer is not None:
+                writer.write(annotated)
+
+            # Encode JPEG for fast browser preview and MJPEG loop
+            ret_enc, jpeg_buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if ret_enc:
+                jpeg_bytes = jpeg_buf.tobytes()
+                frame_bytes_list.append(jpeg_bytes)
+                # Write keyframes to disk frames_dir
+                if frame_idx % 2 == 0 or frame_idx < 30:
+                    (frames_dir / f"f_{frame_idx:05d}.jpg").write_bytes(jpeg_bytes)
+
+            frame_idx += 1
+    finally:
+        cap.release()
         if writer is not None:
-            writer.write(annotated)
+            writer.release()
 
-        # Encode JPEG for fast browser preview and MJPEG loop
-        ret_enc, jpeg_buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        if ret_enc:
-            jpeg_bytes = jpeg_buf.tobytes()
-            frame_bytes_list.append(jpeg_bytes)
-            # Write keyframes to disk frames_dir
-            if frame_idx % 2 == 0 or frame_idx < 30:
-                (frames_dir / f"f_{frame_idx:05d}.jpg").write_bytes(jpeg_bytes)
+    if frame_idx == 0:
+        raise RuntimeError(f"Video file '{original_filename}' contained no readable frames.")
 
-        frame_idx += 1
-
-    cap.release()
-    if writer is not None:
-        writer.release()
+    elapsed_sec = max(0.001, time.perf_counter() - t_proc_start)
+    processed_fps = round(float(frame_idx) / elapsed_sec, 1)
 
     # Cache processed frames in memory for fast MJPEG streaming
     PROCESSED_FRAME_CACHE[video_id] = frame_bytes_list
@@ -424,18 +499,24 @@ def process_uploaded_video(
         "filename": original_filename,
         "total_frames": frame_idx,
         "duration_sec": duration_sec,
-        "fps": fps,
+        "fps": round(float(fps), 1),
+        "processed_fps": processed_fps,
         "resolution": [w, h],
         "incidents_count": len(detected_incidents),
         "incidents": detected_incidents,
         "video_url": f"/api/processed_video/{video_id}",
         "stream_url": f"/api/processed_stream/{video_id}",
-        "thumbnail_url": f"/api/processed_frame/{video_id}/0" if frame_bytes_list else ""
+        "thumbnail_url": f"/api/processed_frame/{video_id}/0" if frame_bytes_list else "",
+        "stats": {
+            "total_frames": frame_idx,
+            "processed_fps": processed_fps,
+            "duration_sec": duration_sec
+        }
     }
     PROCESSED_METADATA_CACHE[video_id] = meta
 
     logger.info(
-        f"[VideoProcessor] Processed video {original_filename} ({frame_idx} frames). "
+        f"[VideoProcessor] Processed video {original_filename} ({frame_idx} frames @ {processed_fps} FPS). "
         f"Found {len(detected_incidents)} incidents. Output: {out_video_path}"
     )
     return meta

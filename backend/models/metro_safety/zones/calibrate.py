@@ -24,7 +24,7 @@ from metro_safety.zones.geometry import (
 
 
 def calibrate_zones(
-    source_uri: str = "http://192.168.1.32:8080/video",
+    source_uri: str = "http://10.243.108.190:8080/video",
     config_path: Path | str = DEFAULT_CONFIG_PATH,
     captured_image_path: str = "data/calibrated_frame.jpg"
 ):
@@ -362,7 +362,7 @@ def calibrate_zones(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Live CCTV Zone Calibration & Validation Tool")
-    parser.add_argument("--source", type=str, default="http://192.168.1.32:8080/video",
+    parser.add_argument("--source", type=str, default="http://10.243.108.190:8080/video",
                         help="Live camera stream URL, webcam index (0), or video file")
     parser.add_argument("--config", type=str, default=str(DEFAULT_CONFIG_PATH),
                         help="Config YAML path to update")

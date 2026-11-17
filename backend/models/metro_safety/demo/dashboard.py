@@ -318,7 +318,7 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                     <span>⚠️ <strong>SOURCE: DEMO CLIP</strong> (phone stream unreachable)</span>
                     <span style="font-size: 11px; background: rgba(0,0,0,0.3); padding: 3px 8px; border-radius: 4px;" id="fallback-retry">Retrying connection...</span>
                 </div>
-                <div style="font-size: 11px; color: #FDE68A; margin-top: 4px;" id="fallback-target">Attempted: http://192.168.1.32:8080/video</div>
+                <div style="font-size: 11px; color: #FDE68A; margin-top: 4px;" id="fallback-target">Attempted: http://10.243.108.190:8080/video</div>
             </div>
 
             <div class="card">
@@ -616,7 +616,7 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
                     const fbBanner = document.getElementById('fallback-banner');
                     if (data.is_fallback) {
                         fbBanner.style.display = 'block';
-                        document.getElementById('fallback-target').textContent = 'Attempted source: ' + (data.source_target || 'http://192.168.1.32:8080/video');
+                        document.getElementById('fallback-target').textContent = 'Attempted source: ' + (data.source_target || 'http://10.243.108.190:8080/video');
                         document.getElementById('fallback-retry').textContent = data.retry_status || 'Retrying background connect...';
                         sBadge.textContent = 'DEMO FALLBACK';
                         sBadge.className = 'badge badge-l2';
@@ -892,7 +892,10 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
     @app.route("/api/events")
     def api_events():
         tel = active_hub.get_telemetry()
-        imported_session = tel.get("session_id") or active_hub.session_id
+        if active_hub.events_history:
+            imported_session = active_hub.session_id
+        else:
+            imported_session = tel.get("session_id") or active_hub.session_id
         events = active_hub.get_events(limit=50, session_id=imported_session)
         return jsonify({
             "events": events,
@@ -1061,6 +1064,9 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
         if not safe_name.endswith(".mp4"):
             safe_name += ".mp4"
         clip_path = Path("demo_clips") / safe_name
+        if not clip_path.exists() and safe_name in {"demo_fall.mp4", "demo_jump.mp4", "demo_distress.mp4"}:
+            from metro_safety.demo.generate_clips import generate_demo_clips
+            generate_demo_clips("demo_clips")
         if not clip_path.exists():
             return jsonify({"status": "error", "message": f"Demo clip '{safe_name}' not found"}), 404
         reg = request.form.get("register_events", "true").lower() in ("true", "1", "yes")

@@ -59,7 +59,7 @@ def run_pipeline(
     elif source_override:
         resolved_source = source_override
     else:
-        resolved_source = cfg["system"].get("source", "http://192.168.1.32:8080/video")
+        resolved_source = cfg["system"].get("source", "http://10.243.108.190:8080/video")
 
     alias_map = {
         "fall": "demo_clips/demo_fall.mp4",
@@ -629,7 +629,7 @@ def run_pipeline(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AI Metro Platform Safety System Live Stream & File Pipeline")
     parser.add_argument("--source", type=str, default=None,
-                        help="Video source: Phone stream URL (http://192.168.1.32:8080/video), webcam index (0), video file path, or alias (fall/jump/distress)")
+                        help="Video source: Phone stream URL (http://10.243.108.190:8080/video), webcam index (0), video file path, or alias (fall/jump/distress)")
     parser.add_argument("--video", type=str, default=None,
                         help="Legacy alias for --source")
     parser.add_argument("--out-video", type=str, default=None,

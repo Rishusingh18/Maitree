@@ -991,7 +991,7 @@
           </div>
 
           <div class="aspect-video bg-black rounded-md relative overflow-hidden border border-[var(--border)]">
-            <img id="forensic-evidence-img" src="assets/cam101_rajiv_chowk.jpg" alt="Evidence Snapshot" class="w-full h-full object-cover">
+            <img id="forensic-evidence-img" src="assets/cam101_rajiv_chowk.jpg" alt="Evidence Snapshot" class="w-full h-full object-cover" onerror="if(!this.src.includes('assets/cam101_rajiv_chowk.jpg')){this.src='assets/cam101_rajiv_chowk.jpg';}">
             <div id="forensic-bbox" class="absolute border-2 border-red-500 bg-red-500/20 rounded-xs" style="top: 48%; left: 32%; width: 28%; height: 42%;">
               <div class="absolute -top-5 left-0 bg-red-600 text-white px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap">
                 Track Intrusion (98.4%)
@@ -1011,10 +1011,10 @@
           </div>
 
           <div class="flex justify-end space-x-2 pt-2 border-t border-[var(--border)]">
-            <button onclick="inspectDetection('DET-5012')" class="px-3 py-1.5 border border-[var(--border)] bg-[var(--surface)] text-[var(--foreground)] rounded-md text-xs font-medium">
+            <button onclick="inspectDetection(selectedDetectionId)" class="px-3 py-1.5 border border-[var(--border)] bg-[var(--surface)] text-[var(--foreground)] rounded-md text-xs font-medium cursor-pointer">
               Inspect Frame
             </button>
-            <button onclick="acknowledgeAlert('Investigation ticket assigned to Platform Marshal')" class="px-3 py-1.5 bg-[var(--primary)] text-white rounded-md text-xs font-medium">
+            <button onclick="acknowledgeAlert('Investigation ticket assigned to Platform Marshal for ' + (selectedDetectionId || 'active detection'))" class="px-3 py-1.5 bg-[var(--primary)] text-white rounded-md text-xs font-medium cursor-pointer">
               Assign Ticket
             </button>
           </div>
@@ -1050,7 +1050,7 @@
             </h2>
 
             <!-- Drop Zone -->
-            <div id="video-drop-zone" class="border-2 border-dashed border-[var(--border)] hover:border-blue-500 rounded-lg p-6 flex flex-col items-center justify-center text-center cursor-pointer transition-colors bg-[var(--surface-secondary)]/50" onclick="document.getElementById('video-file-input').click()">
+            <div id="video-drop-zone" class="border-2 border-dashed border-[var(--border)] hover:border-blue-500 rounded-lg p-6 flex flex-col items-center justify-center text-center cursor-pointer transition-colors bg-[var(--surface-secondary)]/50" onclick="document.getElementById('video-file-input').click()" ondragover="handleVideoDragOver(event)" ondragleave="handleVideoDragLeave(event)" ondrop="handleVideoDrop(event)">
               <input type="file" id="video-file-input" accept=".mp4,.avi,.mov,.mkv,video/mp4,video/x-msvideo,video/quicktime" class="hidden" onchange="handleVideoFileSelected(event)">
               <svg class="w-10 h-10 text-[var(--muted-foreground)] mb-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/><line x1="17" y1="17" x2="22" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/></svg>
               <div class="text-xs font-semibold text-[var(--foreground)]" id="video-drop-title">Drag & drop video clip here</div>
@@ -1156,7 +1156,7 @@
               </div>
 
               <!-- Live Processed MJPEG Stream -->
-              <img id="processed-stream-img" class="w-full h-full object-contain hidden" alt="Annotated Video Stream">
+              <img id="processed-stream-img" class="w-full h-full object-contain hidden" alt="Annotated Video Stream" onerror="handleProcessedStreamError(this)">
 
               <!-- Processing Loading Spinner Overlay -->
               <div id="stream-spinner" class="absolute inset-0 bg-black/75 flex flex-col items-center justify-center space-y-3 hidden">
@@ -2726,13 +2726,16 @@
     ];
 
     let selectedDetectionId = 'DET-5012';
+    let activeDetectionCategory = 'ALL';
+    let activeDetectionQuery = '';
+    let _localForensicDetections = [];
 
     function selectForensicDetection(detId) {
-      selectedDetectionId = detId;
       const det = (typeof mockDetections !== 'undefined' && mockDetections.length > 0)
         ? (mockDetections.find(d => d.id === detId) || mockDetections[0])
         : null;
       if (!det) return;
+      selectedDetectionId = det.id;
 
       const idEl = document.getElementById('forensic-det-id');
       const imgEl = document.getElementById('forensic-evidence-img');
@@ -3261,17 +3264,76 @@
       if (modal) modal.classList.add('hidden');
     }
 
+    function _matchesDetectionCategory(det, cat) {
+      if (!cat || cat === 'ALL') return true;
+      const t = (det.type || '').toUpperCase();
+      if (cat === 'YELLOW_LINE_OVERSTEP') {
+        return t === 'YELLOW_LINE_OVERSTEP' || t === 'YELLOW_LINE_CROSSING' || t === 'LINE_CROSSING';
+      }
+      if (cat === 'UNATTENDED_BAGGAGE') {
+        return t === 'UNATTENDED_BAGGAGE' || t === 'ABANDONED_OBJECT';
+      }
+      return t === cat;
+    }
+
+    function updateDetectionCategoryCounts() {
+      const counts = {
+        ALL: mockDetections.length,
+        TRACK_INTRUSION: mockDetections.filter(d => _matchesDetectionCategory(d, 'TRACK_INTRUSION')).length,
+        YELLOW_LINE_OVERSTEP: mockDetections.filter(d => _matchesDetectionCategory(d, 'YELLOW_LINE_OVERSTEP')).length,
+        CROWD_SURGE: mockDetections.filter(d => _matchesDetectionCategory(d, 'CROWD_SURGE')).length,
+        UNATTENDED_BAGGAGE: mockDetections.filter(d => _matchesDetectionCategory(d, 'UNATTENDED_BAGGAGE')).length
+      };
+      const labels = {
+        ALL: 'All Breaches',
+        TRACK_INTRUSION: 'Track Intrusion',
+        YELLOW_LINE_OVERSTEP: 'Yellow Line Overstep',
+        CROWD_SURGE: 'Crowd Surge',
+        UNATTENDED_BAGGAGE: 'Unattended Baggage'
+      };
+      document.querySelectorAll('.det-filter-btn').forEach(btn => {
+        const cat = btn.getAttribute('data-cat');
+        if (cat && labels[cat]) {
+          btn.textContent = `${labels[cat]} (${counts[cat] || 0})`;
+        }
+      });
+    }
+
     function renderDetectionsTable() {
       const tbody = document.getElementById('detections-table-body');
       if (!tbody) return;
+
+      updateDetectionCategoryCounts();
 
       if (!mockDetections || mockDetections.length === 0) {
         tbody.innerHTML = `<tr><td colspan="7" class="py-6 text-center text-[var(--muted-foreground)]">No safety detections logged yet. Upload a video or run live CCTV monitoring to populate AI evidence.</td></tr>`;
         return;
       }
 
-      tbody.innerHTML = mockDetections.map(det => {
+      const q = (activeDetectionQuery || '').toLowerCase();
+      const filtered = mockDetections.filter(det => {
+        if (!_matchesDetectionCategory(det, activeDetectionCategory)) return false;
+        if (q) {
+          return (det.id || '').toLowerCase().includes(q) ||
+                 (det.station || '').toLowerCase().includes(q) ||
+                 (det.categoryText || '').toLowerCase().includes(q) ||
+                 (det.type || '').toLowerCase().includes(q);
+        }
+        return true;
+      });
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" class="py-6 text-center text-[var(--muted-foreground)]">No detections match the current filter.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = filtered.map(det => {
         const isSelected = det.id === selectedDetectionId;
+        const sevCls = det.sev === 'CRITICAL'
+          ? 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400'
+          : det.sev === 'HIGH'
+          ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400'
+          : 'bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400';
         return `
           <tr class="transition-colors cursor-pointer ${isSelected ? 'bg-blue-50/60 dark:bg-blue-950/30' : 'hover:bg-[var(--surface-secondary)]'}" onclick="selectForensicDetection('${det.id}')">
             <td class="py-2.5 px-2 font-semibold text-blue-600 dark:text-blue-400">${det.id}</td>
@@ -3279,7 +3341,7 @@
             <td class="py-2.5 px-2 text-[var(--foreground)] font-medium">${det.station}</td>
             <td class="py-2.5 px-2 text-[var(--foreground)]">${det.categoryText}</td>
             <td class="py-2.5 px-2 text-emerald-600 font-medium">${det.conf}</td>
-            <td class="py-2.5 px-2"><span class="px-1.5 py-0.5 rounded text-[11px] font-medium ${det.sev === 'CRITICAL' ? 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400' : 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400'}">${det.sev}</span></td>
+            <td class="py-2.5 px-2"><span class="px-1.5 py-0.5 rounded text-[11px] font-medium ${sevCls}">${det.sev}</span></td>
             <td class="py-2.5 px-2 text-right" onclick="event.stopPropagation()">
               <button onclick="inspectDetection('${det.id}')" class="px-2 py-0.5 bg-[var(--surface)] hover:bg-[var(--surface-secondary)] border border-[var(--border)] rounded text-xs text-[var(--foreground)]">Inspect</button>
             </td>
@@ -3289,61 +3351,22 @@
     }
 
     function filterDetectionCategory(cat) {
+      activeDetectionCategory = cat || 'ALL';
       document.querySelectorAll('.det-filter-btn').forEach(btn => {
         btn.classList.remove('bg-[var(--surface)]', 'text-[var(--foreground)]', 'font-semibold', 'shadow-xs');
         btn.classList.add('bg-[var(--surface-secondary)]', 'text-[var(--muted-foreground)]');
       });
-      const activeBtn = document.querySelector(`.det-filter-btn[data-cat="${cat}"]`);
+      const activeBtn = document.querySelector(`.det-filter-btn[data-cat="${activeDetectionCategory}"]`);
       if (activeBtn) {
         activeBtn.classList.add('bg-[var(--surface)]', 'text-[var(--foreground)]', 'font-semibold', 'shadow-xs');
         activeBtn.classList.remove('bg-[var(--surface-secondary)]', 'text-[var(--muted-foreground)]');
       }
-
-      let filtered = mockDetections;
-      if (cat !== 'ALL') {
-        filtered = filtered.filter(d => d.type === cat);
-      }
-      const tbody = document.getElementById('detections-table-body');
-      if (tbody) {
-        tbody.innerHTML = filtered.map(det => `
-          <tr class="transition-colors cursor-pointer hover:bg-[var(--surface-secondary)]" onclick="selectForensicDetection('${det.id}')">
-            <td class="py-2.5 px-2 font-semibold text-blue-600 dark:text-blue-400">${det.id}</td>
-            <td class="py-2.5 px-2 text-[var(--muted-foreground)] tabular-nums">${det.time}</td>
-            <td class="py-2.5 px-2 text-[var(--foreground)] font-medium">${det.station}</td>
-            <td class="py-2.5 px-2 text-[var(--foreground)]">${det.categoryText}</td>
-            <td class="py-2.5 px-2 text-emerald-600 font-medium">${det.conf}</td>
-            <td class="py-2.5 px-2"><span class="px-1.5 py-0.5 rounded text-[11px] font-medium ${det.sev === 'CRITICAL' ? 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400' : 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400'}">${det.sev}</span></td>
-            <td class="py-2.5 px-2 text-right" onclick="event.stopPropagation()">
-              <button onclick="inspectDetection('${det.id}')" class="px-2 py-0.5 bg-[var(--surface)] hover:bg-[var(--surface-secondary)] border border-[var(--border)] rounded text-xs text-[var(--foreground)]">Inspect</button>
-            </td>
-          </tr>
-        `).join('');
-      }
+      renderDetectionsTable();
     }
 
     function filterDetections(query) {
-      const q = (query || '').toLowerCase();
-      const filtered = mockDetections.filter(d => 
-        d.id.toLowerCase().includes(q) ||
-        d.station.toLowerCase().includes(q) ||
-        d.categoryText.toLowerCase().includes(q)
-      );
-      const tbody = document.getElementById('detections-table-body');
-      if (tbody) {
-        tbody.innerHTML = filtered.map(det => `
-          <tr class="hover:bg-[var(--surface-secondary)] transition-colors">
-            <td class="py-2.5 px-2 font-semibold text-blue-600 cursor-pointer" onclick="inspectDetection('${det.id}')">${det.id}</td>
-            <td class="py-2.5 px-2 text-[var(--muted-foreground)] tabular-nums">${det.time}</td>
-            <td class="py-2.5 px-2 text-[var(--foreground)]">${det.station}</td>
-            <td class="py-2.5 px-2 text-[var(--foreground)]">${det.categoryText}</td>
-            <td class="py-2.5 px-2 text-emerald-600 font-medium">${det.conf}</td>
-            <td class="py-2.5 px-2"><span class="px-1.5 py-0.5 rounded text-[11px] font-medium bg-red-100 text-red-700">${det.sev}</span></td>
-            <td class="py-2.5 px-2 text-right">
-              <button onclick="inspectDetection('${det.id}')" class="px-2 py-0.5 border border-[var(--border)] rounded text-xs">Inspect</button>
-            </td>
-          </tr>
-        `).join('');
-      }
+      activeDetectionQuery = query || '';
+      renderDetectionsTable();
     }
 
     function inspectDetection(detId) {
@@ -4092,12 +4115,24 @@
             mockIncidents.length = 0;
             liveIncidents.forEach(i => mockIncidents.push(i));
 
-            // Also keep mockDetections synchronized for Digital Forensics view
+            // Also keep mockDetections synchronized for Digital Forensics view (preserving local unregistered video detections)
             if (typeof mockDetections !== 'undefined') {
-              mockDetections.length = 0;
+              const seenIds = new Set();
+              const merged = [];
+              if (Array.isArray(_localForensicDetections) && _localForensicDetections.length > 0) {
+                _localForensicDetections.forEach(d => {
+                  if (!seenIds.has(d.id)) {
+                    seenIds.add(d.id);
+                    merged.push(d);
+                  }
+                });
+              }
               liveIncidents.forEach(i => {
-                mockDetections.push({
-                  id: (i.id || '').replace('EV-', 'DET-'),
+                const detId = (i.id || '').replace('EV-', 'DET-');
+                if (seenIds.has(detId)) return;
+                seenIds.add(detId);
+                merged.push({
+                  id: detId,
                   timestamp: i.timestamp,
                   time: i.time,
                   station: `${i.station} ${i.platform}`,
@@ -4108,9 +4143,11 @@
                   status: i.status,
                   img: i.img || 'assets/cam101_rajiv_chowk.jpg',
                   action: (i._raw && i._raw.action) || `Verify ${i.classification} at ${i.station}`,
-                  bbox: { top: '35%', left: '25%', width: '35%', height: '45%' }
+                  bbox: (i._raw && i._raw.bbox) || null
                 });
               });
+              mockDetections.length = 0;
+              merged.forEach(d => mockDetections.push(d));
               if (typeof renderDetectionsTable === 'function') {
                 renderDetectionsTable();
               }
@@ -4310,8 +4347,7 @@
 
     // ===== VIDEO FORENSICS & UPLOAD HANDLERS =====
     let _selectedVideoFile = null;
-    function handleVideoFileSelected(event) {
-      const file = event.target.files && event.target.files[0];
+    function _setSelectedVideoFile(file) {
       if (!file) return;
       _selectedVideoFile = file;
       const dropTitle = document.getElementById('video-drop-title');
@@ -4320,6 +4356,40 @@
       if (dropTitle) dropTitle.textContent = file.name;
       if (dropDesc) dropDesc.textContent = `${mb} MB · Ready for AI safety inference`;
       acknowledgeAlert(`Video selected: ${file.name} (${mb} MB)`);
+    }
+
+    function handleVideoFileSelected(event) {
+      const file = event.target.files && event.target.files[0];
+      _setSelectedVideoFile(file);
+    }
+
+    function handleVideoDragOver(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      const dz = document.getElementById('video-drop-zone');
+      if (dz) dz.classList.add('border-blue-500', 'bg-blue-50/40', 'dark:bg-blue-950/30');
+    }
+
+    function handleVideoDragLeave(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      const dz = document.getElementById('video-drop-zone');
+      if (dz) dz.classList.remove('border-blue-500', 'bg-blue-50/40', 'dark:bg-blue-950/30');
+    }
+
+    function handleVideoDrop(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      handleVideoDragLeave(event);
+      const files = event.dataTransfer && event.dataTransfer.files;
+      if (files && files.length > 0) {
+        _setSelectedVideoFile(files[0]);
+      }
+    }
+
+    function handleProcessedStreamError(imgEl) {
+      if (!imgEl || !imgEl.getAttribute('src')) return;
+      acknowledgeAlert('Processed MJPEG stream interrupted. You can still download the annotated MP4 or re-run analysis.');
     }
 
     function submitVideoUpload() {
@@ -4361,7 +4431,10 @@
 
       if (btn) btn.disabled = true;
       if (placeholder) placeholder.classList.add('hidden');
-      if (streamImg) streamImg.classList.add('hidden');
+      if (streamImg) {
+        streamImg.classList.add('hidden');
+        streamImg.removeAttribute('src');
+      }
       if (spinner) spinner.classList.remove('hidden');
       if (spinnerText) spinnerText.textContent = `Analyzing ${fileName} (YOLOv8-pose + Safety Zones)...`;
 
@@ -4371,19 +4444,27 @@
         method: 'POST',
         body: bodyData
       })
-        .then(r => {
-          if (!r.ok) throw new Error(`HTTP ${r.status}`);
-          return r.json();
+        .then(async r => {
+          let payload = null;
+          try {
+            payload = await r.json();
+          } catch (_) {
+            payload = null;
+          }
+          if (!r.ok) {
+            throw new Error((payload && (payload.message || payload.detail)) || `HTTP ${r.status}`);
+          }
+          return payload;
         })
         .then(data => {
-          if (data.status !== 'success' && data.status !== 'ok') {
-            throw new Error(data.message || 'Processing failed');
+          if (!data || (data.status !== 'success' && data.status !== 'ok')) {
+            throw new Error((data && data.message) || 'Processing failed');
           }
 
           const streamUrl = data.processed_stream_url || data.stream_url;
           const videoUrl = data.processed_video_path || data.video_url;
           const totalFrames = data.total_frames || (data.stats && data.stats.total_frames) || 0;
-          const fps = data.fps || (data.stats && data.stats.processed_fps) || 0;
+          const fps = data.processed_fps || (data.stats && data.stats.processed_fps) || data.fps || 0;
           const incidents = data.incidents || [];
           const incidentsCount = data.incidents_count !== undefined ? data.incidents_count : incidents.length;
           const duration = data.duration_sec || (data.stats && data.stats.duration_sec) || 0;
@@ -4421,11 +4502,10 @@
 
           // 5. Populate Digital Forensics view with incidents from this video
           if (incidents && incidents.length > 0) {
-            mockDetections.length = 0;
-            incidents.forEach(inc => {
-              const snapUrl = inc.snapshot_url || (inc.id ? `/api/snapshots/${inc.id}.jpg` : 'assets/cam101_rajiv_chowk.jpg');
+            const videoForensics = incidents.map(inc => {
+              const snapUrl = inc.snapshot_data || inc.snapshot_url || (inc.id ? `/api/snapshots/${inc.id}.jpg` : 'assets/cam101_rajiv_chowk.jpg');
               const catText = EVENT_TYPE_LABELS[inc.event_type] || inc.event_type;
-              mockDetections.push({
+              return {
                 id: (inc.id || '').replace('EV-', 'DET-'),
                 time: inc.time_str || new Date().toLocaleTimeString('en-GB'),
                 timestamp: inc.timestamp || Math.floor(Date.now() / 1000),
@@ -4433,13 +4513,16 @@
                 type: inc.event_type,
                 categoryText: catText,
                 conf: inc.confidence ? `${Math.round(inc.confidence * 100)}%` : '98.5%',
-                sev: inc.severity === 'L3' ? 'CRITICAL' : inc.severity === 'L2' ? 'HIGH' : 'MEDIUM',
-                status: 'ACTIVE',
+                sev: (inc.severity === 'L3' || inc.severity === 'CRITICAL') ? 'CRITICAL' : (inc.severity === 'L2' || inc.severity === 'HIGH' || inc.severity === 'DISTRESS') ? 'HIGH' : 'MEDIUM',
+                status: inc.registered_to_hub === false ? 'LOCAL' : 'ACTIVE',
                 img: snapUrl,
                 action: inc.action || `Investigate ${catText} safety breach`,
-                bbox: { top: '35%', left: '25%', width: '35%', height: '45%' }
-              });
+                bbox: inc.bbox || null
+              };
             });
+            _localForensicDetections = videoForensics;
+            mockDetections.length = 0;
+            videoForensics.forEach(d => mockDetections.push(d));
             if (typeof renderDetectionsTable === 'function') {
               renderDetectionsTable();
             }
@@ -4452,8 +4535,8 @@
           pollEvents();
           updateOverviewKPICards();
 
-          const count = data.incidents ? data.incidents.length : 0;
-          acknowledgeAlert(`✓ Processing complete: ${count} safety incidents detected and registered.`);
+          const count = incidents.length;
+          acknowledgeAlert(`✓ Processing complete: ${count} safety incident${count === 1 ? '' : 's'} detected.`);
         })
         .catch(err => {
           if (spinner) spinner.classList.add('hidden');
@@ -4482,12 +4565,17 @@
 
       tbody.innerHTML = incidents.map(inc => {
         const sevBg = inc.severity === 'CRITICAL' || inc.severity === 'L3' ? 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-400' :
-                      inc.severity === 'HIGH' || inc.severity === 'L2' ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400' :
+                      inc.severity === 'HIGH' || inc.severity === 'L2' || inc.severity === 'DISTRESS' ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400' :
                       'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300';
         const snapUrl = inc.snapshot_url || (inc.id ? `/api/snapshots/${inc.id}.jpg` : 'assets/cam101_rajiv_chowk.jpg');
         const confText = inc.confidence ? `${Math.round(inc.confidence * 100)}%` : '98%';
-        const frameText = inc.frame_index !== undefined ? `Frame #${inc.frame_index}` : '--';
+        const frameNum = inc.frame_idx !== undefined ? inc.frame_idx : inc.frame_index;
+        const frameText = frameNum !== undefined ? `Frame #${frameNum}` : '--';
         const label = EVENT_TYPE_LABELS[inc.event_type] || inc.event_type;
+        const isRegistered = inc.registered_to_hub !== false;
+        const hubBadge = isRegistered
+          ? `<span class="inline-flex items-center space-x-1.5 text-emerald-600 dark:text-emerald-400 font-semibold text-[11px]"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span><span>REGISTERED</span></span>`
+          : `<span class="inline-flex items-center space-x-1.5 text-amber-600 dark:text-amber-400 font-semibold text-[11px]"><span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span><span>LOCAL ONLY</span></span>`;
 
         return `
           <tr class="hover:bg-[var(--surface-secondary)] transition-colors">
@@ -4507,14 +4595,11 @@
               ${confText}
             </td>
             <td class="py-3 px-3">
-              <span class="inline-flex items-center space-x-1.5 text-emerald-600 dark:text-emerald-400 font-semibold text-[11px]">
-                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                <span>REGISTERED</span>
-              </span>
+              ${hubBadge}
             </td>
             <td class="py-3 px-3 text-right">
               <div class="inline-flex items-center space-x-1.5">
-                <button onclick="openForensicsInspection('${(inc.id || '').replace('EV-', 'DET-')}')" class="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-[11px] font-medium transition-colors shadow-xs">
+                <button onclick="openForensicsInspection('${(inc.id || '').replace('EV-', 'DET-')}')" class="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-[11px] font-medium transition-colors shadow-xs cursor-pointer">
                   Inspect Forensics
                 </button>
                 <a href="${snapUrl}" target="_blank" class="inline-flex items-center space-x-1 px-2.5 py-1 bg-[var(--surface)] hover:bg-[var(--surface-secondary)] border border-[var(--border)] rounded text-[11px] text-[var(--foreground)] font-medium transition-colors">

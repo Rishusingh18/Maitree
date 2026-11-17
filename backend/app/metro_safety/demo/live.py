@@ -89,7 +89,7 @@ def run_live_pipeline(
         resolved_source = source_override
         logger.info(f"[Live] Using METRO_SOURCE_OVERRIDE: {resolved_source}")
     else:
-        resolved_source = cfg["system"].get("source", "http://192.168.1.32:8080/video")
+        resolved_source = cfg["system"].get("source", "http://10.243.108.190:8080/video")
 
     print("\n" + "=" * 65)
     print("  🚇 DMRC AI METRO PLATFORM SAFETY SYSTEM - LIVE MODE")
