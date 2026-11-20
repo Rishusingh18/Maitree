@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import asyncio
 import logging
@@ -193,6 +194,50 @@ async def confirm_zones_get():
         {"status": "error", "message": "Method Not Allowed. Use POST /api/zones/confirm."},
         status_code=405
     )
+
+@app.post("/api/camera/switch", tags=["Camera Control"])
+async def switch_camera(request: Request):
+    """Switch active CCTV camera source dynamically between 0, 1, 2, or custom IP stream."""
+    try:
+        new_source = None
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type:
+            data = await request.json()
+            new_source = data.get("source")
+        elif "multipart/form-data" in content_type or "application/x-www-form-urlencoded" in content_type:
+            form = await request.form()
+            new_source = form.get("source")
+        if new_source is None:
+            new_source = request.query_params.get("source")
+
+        if new_source is None:
+            return JSONResponse({"status": "error", "message": "Missing 'source' parameter"}, status_code=400)
+
+        # Write to cache command file for ML vision pipeline thread/process
+        cmd_dir = Path("data/cache")
+        cmd_dir.mkdir(parents=True, exist_ok=True)
+        (cmd_dir / "camera_switch.cmd").write_text(json.dumps({
+            "source": new_source,
+            "timestamp": time.time()
+        }), encoding="utf-8")
+
+        return JSONResponse({"status": "ok", "switched_to": str(new_source)})
+    except Exception as e:
+        logger.error(f"Error switching camera: {e}", exc_info=True)
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+@app.get("/api/camera/list", tags=["Camera Control"])
+async def list_cameras():
+    """List available camera options for quick switching."""
+    cams = [
+        {"id": "0", "name": "Camera 0 (Mac Built-in FaceTime)"},
+        {"id": "1", "name": "Camera 1 (External / Iriun Phone Webcam)"},
+        {"id": "2", "name": "Camera 2 (Secondary External Device)"},
+        {"id": "http://10.243.108.190:8080/video", "name": "Network IP Stream (10.243.108.190:8080)"},
+        {"id": "demo_clips/demo_fall.mp4", "name": "Demo Clip: Fall Incident"},
+        {"id": "demo_clips/demo_jump.mp4", "name": "Demo Clip: Jump Incident"}
+    ]
+    return JSONResponse({"cameras": cams})
 
 _BUILTIN_DEMO_CLIPS = {"demo_fall.mp4", "demo_jump.mp4", "demo_distress.mp4"}
 

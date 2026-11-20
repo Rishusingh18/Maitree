@@ -263,6 +263,37 @@ def run_pipeline(
                 except Exception:
                     pass
 
+            # Check dynamic camera switch command
+            cam_cmd = Path("data/cache/camera_switch.cmd")
+            new_cam_src = None
+            if hasattr(hub, "requested_source") and hub.requested_source is not None:
+                new_cam_src = hub.requested_source
+                hub.requested_source = None
+            elif cam_cmd.exists():
+                try:
+                    c_data = json.loads(cam_cmd.read_text(encoding="utf-8"))
+                    cam_cmd.unlink()
+                    if (time.time() - float(c_data.get("timestamp", 0))) <= 15.0:
+                        new_cam_src = c_data.get("source")
+                except Exception:
+                    pass
+
+            if new_cam_src is not None and str(new_cam_src).strip() != str(resolved_source).strip():
+                print(f"[Pipeline] Switching camera source from {resolved_source} to {new_cam_src}...")
+                try:
+                    frame_source.release()
+                except Exception as _e:
+                    logger.warning(f"Error releasing old frame source: {_e}")
+                resolved_source = int(new_cam_src) if str(new_cam_src).strip().isdigit() else str(new_cam_src)
+                frame_source = create_frame_source(
+                    source_uri=resolved_source,
+                    fallback_path=fallback_video,
+                    allow_fallback=True,
+                    loop_video=loop_video
+                )
+                hub.source_target = str(resolved_source)
+                print(f"[Pipeline] Successfully switched to source: {frame_source.source_name}")
+
             # Read latest non-stale frame from threaded source
             ret, frame, frame_ts = frame_source.read()
             if not ret or frame is None:

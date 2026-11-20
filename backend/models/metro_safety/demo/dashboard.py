@@ -1018,6 +1018,40 @@ def create_dashboard_app(hub: LiveHub = None) -> Flask:
         active_hub.push_event(data)
         return jsonify({"status": "received"})
 
+    @app.route("/api/camera/switch", methods=["POST"])
+    def api_camera_switch():
+        data = request.get_json(silent=True) or request.form.to_dict() or {}
+        new_source = data.get("source") or request.args.get("source")
+        if new_source is None:
+            return jsonify({"status": "error", "message": "Missing 'source' parameter"}), 400
+
+        active_hub.requested_source = new_source
+        active_hub.source_target = str(new_source)
+
+        cmd_dir = Path("data/cache")
+        cmd_dir.mkdir(parents=True, exist_ok=True)
+        (cmd_dir / "camera_switch.cmd").write_text(json.dumps({
+            "source": new_source,
+            "timestamp": time.time()
+        }), encoding="utf-8")
+
+        return jsonify({"status": "ok", "switched_to": str(new_source)})
+
+    @app.route("/api/camera/list", methods=["GET"])
+    def api_camera_list():
+        cams = [
+            {"id": "0", "name": "Camera 0 (Mac Built-in FaceTime)"},
+            {"id": "1", "name": "Camera 1 (External / Iriun Phone Webcam)"},
+            {"id": "2", "name": "Camera 2 (Secondary External Device)"},
+            {"id": "http://10.243.108.190:8080/video", "name": "Network IP Stream (10.243.108.190:8080)"},
+            {"id": "demo_clips/demo_fall.mp4", "name": "Demo Clip: Fall Incident"},
+            {"id": "demo_clips/demo_jump.mp4", "name": "Demo Clip: Jump Incident"}
+        ]
+        return jsonify({
+            "cameras": cams,
+            "current_source": getattr(active_hub, "source_target", "1")
+        })
+
     @app.route("/api/zones/confirm", methods=["POST"])
     def api_zones_confirm():
         """Operator confirmation of current or proposed zone alignment."""
